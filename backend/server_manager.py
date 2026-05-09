@@ -18,7 +18,7 @@ from typing import List, Optional
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("TAK-C2")
 
-app = FastAPI(title="TAK_C2_BRIDGE_V37_P2P_FINAL")
+app = FastAPI(title="TAK_C2_BRIDGE_V4.0_FINAL")
 
 app.add_middleware(
     CORSMiddleware,
@@ -43,7 +43,7 @@ SHARED_SOCKET = None
 SOCKET_LOCK = threading.Lock()
 TARGET_HOST = ""
 MISSION_ACTIVE = threading.Event()
-MY_SERIAL_UID = "9876543210abc"
+MY_REAL_UID = "ANDROID-C2-HQ"
 
 def universal_clean(text):
     if not text: return ""
@@ -54,12 +54,6 @@ def universal_clean(text):
         return res.strip()
     except: return text
 
-def clean_uid(text):
-    clean = universal_clean(text)
-    clean = clean.replace(" ", "_")
-    clean = "".join(c for c in unicodedata.normalize('NFD', clean) if unicodedata.category(c) != 'Mn')
-    return re.sub(r'[^a-zA-Z0-9_]', '', clean)
-
 def safe_float(v, default=0.0):
     try:
         if v is None or str(v).lower() == "undefined" or str(v).strip() == "": return default
@@ -67,6 +61,7 @@ def safe_float(v, default=0.0):
     except: return default
 
 def send_raw_cot(xml_content):
+    global SHARED_SOCKET
     try:
         with SOCKET_LOCK:
             if SHARED_SOCKET:
@@ -78,35 +73,37 @@ def send_raw_cot(xml_content):
     return False
 
 def send_chat_packet(sender, text, lat, lng, target_uid="BROADCAST"):
-    ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    stale = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 600))
+    ts = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+    stale = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() + 600))
     msg_guid = str(uuid.uuid4())
     
-    # Si es broadcast, usamos All Chat. Si no, el UID del destinatario.
-    conv_id = "All Chat" if target_uid == "BROADCAST" else target_uid
-    msg_id = f"GeoChat.{MY_SERIAL_UID}.{conv_id.replace(' ', '_')}.{msg_guid}"
+    # Sincronizado con Grupo Green
+    conv_id = "Green" if target_uid == "BROADCAST" else target_uid
+    parent_id = "Green" if target_uid == "BROADCAST" else "Direct"
+    msg_id = f"GeoChat.{MY_REAL_UID}.{conv_id.replace(' ', '_')}.{msg_guid}"
     
-    xml = (f'<event version="2.0" uid="{msg_id}" type="b-t-f" time="{ts}" start="{ts}" stale="{stale}" how="m-g">'
+    xml = (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+           f'<event version="2.0" uid="{msg_id}" type="b-t-f" time="{ts}" start="{ts}" stale="{stale}" how="h-e">'
            f'<point lat="{lat}" lon="{lng}" hae="0.0" ce="9.9" le="9.9"/>'
            f'<detail>'
-           f'<__chat parent="ALL" group="NONE" senderCallsign="{sender}" messageId="{msg_guid}" conversationId="{conv_id}">'
+           f'<__chat parent="{parent_id}" group="NONE" senderCallsign="{sender}" messageId="{msg_guid}" conversationId="{conv_id}">'
            f'<content>{saxutils.escape(text)}</content></__chat>'
-           f'<link uid="{MY_SERIAL_UID}" type="a-f-G-U-C" relation="p-p"/>'
+           f'<link uid="{MY_REAL_UID}" type="a-f-G-U-C" relation="p-p"/>'
            f'<contact callsign="{sender}"/>'
            f'<remarks>{saxutils.escape(text)}</remarks></detail></event>')
     send_raw_cot(xml)
 
-def cot_worker(host):
+def cot_listener(host, port):
     global SHARED_SOCKET, TARGET_HOST
-    TARGET_HOST = host
     buffer = ""
+    logger.info(f"LISTENER_P{port}_READY")
     while MISSION_ACTIVE.is_set():
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.settimeout(5.0)
-            s.connect((host, 8087))
-            with SOCKET_LOCK: SHARED_SOCKET = s
-            logger.info("LINK_UP")
+            s.connect((host, port))
+            if port == 8087:
+                with SOCKET_LOCK: SHARED_SOCKET = s
             
             while MISSION_ACTIVE.is_set():
                 try:
@@ -118,6 +115,7 @@ def cot_worker(host):
                         event_end = buffer.find("</event>") + 8
                         data = buffer[:event_end]
                         buffer = buffer[event_end:]
+                        
                         try:
                             if 'callsign="' in data:
                                 cs = universal_clean(data.split('callsign="')[1].split('"')[0])
@@ -126,6 +124,7 @@ def cot_worker(host):
                                 lon = data.split('lon="')[1].split('"')[0]
                                 with UNITS_LOCK:
                                     UNITS_VAULT[cs] = {"callsign": cs, "uid": uid, "lat": safe_float(lat), "lng": safe_float(lon), "last_seen": time.time()}
+                            
                             if '<__chat' in data or '<remarks>' in data:
                                 msg_text = ""
                                 if '<remarks>' in data: msg_text = universal_clean(data.split('<remarks>')[1].split('</remarks>')[0])
@@ -138,23 +137,25 @@ def cot_worker(host):
                 except socket.timeout: continue
                 except: break
         except:
-            with SOCKET_LOCK: SHARED_SOCKET = None
+            if port == 8087:
+                with SOCKET_LOCK: SHARED_SOCKET = None
             time.sleep(5)
 
 def presence_beacon(host, callsign, lat, lng):
     while MISSION_ACTIVE.is_set():
-        ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        stale = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 300))
+        ts = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+        stale = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() + 300))
         pretty_cs = universal_clean(callsign)
+        # Sincronizacion Final ATAK 5.x
         xml = (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-               f'<event version="2.0" uid="{MY_SERIAL_UID}" type="a-f-G-U-C" time="{ts}" start="{ts}" stale="{stale}" how="m-g">'
+               f'<event version="2.0" uid="{MY_REAL_UID}" type="a-f-G-U-C" time="{ts}" start="{ts}" stale="{stale}" how="m-g">'
                f'<point lat="{lat}" lon="{lng}" hae="0.0" ce="999" le="999"/>'
                f'<detail>'
-               f'<contact callsign="{pretty_cs}" phone="{pretty_cs}"/>'
-               f'<__group role="Team" name="Cyan"/>'
+               f'<contact endpoint="*:-1:stcp" callsign="{pretty_cs}"/>'
+               f'<__group role="Team Member" name="Green"/>'
                f'<status battery="100"/>'
-               f'<takv os="android" version="4.8.1" platform="TAB"/>'
-               f'<__chat chatgrp_id="All Chat"/>'
+               f'<takv os="android" version="5.6.0.CIV" platform="ATAK-CIV"/>'
+               f'<__chat chatgrp_id="Green"/>'
                f'<remarks>C2_ACTIVE</remarks>'
                f'</detail></event>')
         send_raw_cot(xml)
@@ -162,16 +163,19 @@ def presence_beacon(host, callsign, lat, lng):
 
 @app.get("/api/v1/control/{action}")
 async def mission_control(action: str, host: str = None, callsign: str = "HQ", lat: str = "40", lng: str = "0"):
-    global MISSION_ACTIVE
+    global MISSION_ACTIVE, TARGET_HOST
     if action == "start":
+        TARGET_HOST = host
         if not MISSION_ACTIVE.is_set():
             MISSION_ACTIVE.set()
-            threading.Thread(target=cot_worker, args=(host,), daemon=True).start()
-            threading.Thread(target=presence_beacon, args=(host, callsign, safe_float(lat), safe_float(lng)), daemon=True).start()
+            threading.Thread(target=cot_listener, args=(host, 8087), daemon=True).start()
+            threading.Thread(target=cot_listener, args=(host, 8088), daemon=True).start()
+            threading.Thread(target=presence_beacon, args=(host, callsign, safe_float(lat, 40.41), safe_float(lng, -3.70)), daemon=True).start()
         return {"status": "MISSION_DEPLOYED"}
     else:
         MISSION_ACTIVE.clear()
         with SOCKET_LOCK:
+            global SHARED_SOCKET
             if SHARED_SOCKET: SHARED_SOCKET.close(); SHARED_SOCKET = None
         return {"status": "MISSION_STANDBY"}
 
@@ -190,9 +194,8 @@ async def send_comm(msg: dict):
     sender = universal_clean(msg.get('sender', 'OP'))
     text = msg.get('text', '')
     target = msg.get('target', 'BROADCAST')
-    lat = safe_float(msg.get('lat'), 40)
-    lng = safe_float(msg.get('lng'), -3)
-    logger.info(f"TX_CHAT TO {target}: {text}")
+    lat = safe_float(msg.get('lat'), 40.41)
+    lng = safe_float(msg.get('lng'), -3.70)
     send_chat_packet(sender, text, lat, lng, target)
     COMMS_VAULT.append(msg)
     return {"status": "success"}
