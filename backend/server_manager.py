@@ -12,13 +12,14 @@ import unicodedata
 import html
 import uuid
 import logging
+import struct
 from pydantic import BaseModel
 from typing import List, Optional
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("TAK-C2")
 
-app = FastAPI(title="TAK_C2_BRIDGE_V4.0_FINAL")
+app = FastAPI(title="TAK_C2_BRIDGE_V4.6_DROID_SYNC")
 
 app.add_middleware(
     CORSMiddleware,
@@ -43,7 +44,7 @@ SHARED_SOCKET = None
 SOCKET_LOCK = threading.Lock()
 TARGET_HOST = ""
 MISSION_ACTIVE = threading.Event()
-MY_REAL_UID = "ANDROID-C2-HQ"
+MY_REAL_UID = "ANDROID-C2-BRIDGE"
 
 def universal_clean(text):
     if not text: return ""
@@ -60,43 +61,49 @@ def safe_float(v, default=0.0):
         return float(str(v).replace(',', '.'))
     except: return default
 
+def get_tak_timestamp(offset=0):
+    t = time.time() + offset
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t)) + f".{int((t % 1) * 1000):03d}Z"
+
 def send_raw_cot(xml_content):
     global SHARED_SOCKET
     try:
         with SOCKET_LOCK:
             if SHARED_SOCKET:
-                packet = xml_content.strip() + "\0"
+                packet = xml_content.strip() + "\n\0"
                 SHARED_SOCKET.sendall(packet.encode('utf-8'))
-                return True
     except:
         with SOCKET_LOCK: SHARED_SOCKET = None
-    return False
 
 def send_chat_packet(sender, text, lat, lng, target_uid="BROADCAST"):
-    ts = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
-    stale = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() + 600))
+    ts = get_tak_timestamp()
+    stale = get_tak_timestamp(3600)
     msg_guid = str(uuid.uuid4())
+    conv_id = "All Chat" if target_uid == "BROADCAST" else target_uid
     
-    # Sincronizado con Grupo Green
-    conv_id = "Green" if target_uid == "BROADCAST" else target_uid
-    parent_id = "Green" if target_uid == "BROADCAST" else "Direct"
-    msg_id = f"GeoChat.{MY_REAL_UID}.{conv_id.replace(' ', '_')}.{msg_guid}"
+    # 1. Mensaje Moderno (b-t-f)
+    msg_id_1 = f"GeoChat.{MY_REAL_UID}.{conv_id.replace(' ', '_')}.{msg_guid}"
+    xml_1 = (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+             f'<event version="2.0" uid="{msg_id_1}" type="b-t-f" time="{ts}" start="{ts}" stale="{stale}" how="h-g-i-g-o">'
+             f'<point lat="{lat}" lon="{lng}" hae="0.0" ce="9.9" le="9.9"/>'
+             f'<detail>'
+             f'<__chat parent="Root" group="NONE" senderCallsign="{sender}" messageId="{msg_guid}" conversationId="{conv_id}">'
+             f'<content>{saxutils.escape(text)}</content></__chat>'
+             f'<link uid="{MY_REAL_UID}" type="a-f-G-U-C" relation="p-p"/>'
+             f'<contact endpoint="*:-1:stcp" callsign="{sender}"/>'
+             f'<remarks>{saxutils.escape(text)}</remarks></detail></event>')
+    send_raw_cot(xml_1)
     
-    xml = (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-           f'<event version="2.0" uid="{msg_id}" type="b-t-f" time="{ts}" start="{ts}" stale="{stale}" how="h-e">'
-           f'<point lat="{lat}" lon="{lng}" hae="0.0" ce="9.9" le="9.9"/>'
-           f'<detail>'
-           f'<__chat parent="{parent_id}" group="NONE" senderCallsign="{sender}" messageId="{msg_guid}" conversationId="{conv_id}">'
-           f'<content>{saxutils.escape(text)}</content></__chat>'
-           f'<link uid="{MY_REAL_UID}" type="a-f-G-U-C" relation="p-p"/>'
-           f'<contact callsign="{sender}"/>'
-           f'<remarks>{saxutils.escape(text)}</remarks></detail></event>')
-    send_raw_cot(xml)
+    # 2. Mensaje Legado (t-x-c-t)
+    xml_2 = (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+             f'<event version="2.0" uid="{msg_guid}" type="t-x-c-t" time="{ts}" start="{ts}" stale="{stale}" how="h-e">'
+             f'<point lat="{lat}" lon="{lng}" hae="0.0" ce="9.9" le="9.9"/>'
+             f'<detail><remarks>{saxutils.escape(text)}</remarks></detail></event>')
+    send_raw_cot(xml_2)
 
 def cot_listener(host, port):
     global SHARED_SOCKET, TARGET_HOST
     buffer = ""
-    logger.info(f"LISTENER_P{port}_READY")
     while MISSION_ACTIVE.is_set():
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -104,7 +111,6 @@ def cot_listener(host, port):
             s.connect((host, port))
             if port == 8087:
                 with SOCKET_LOCK: SHARED_SOCKET = s
-            
             while MISSION_ACTIVE.is_set():
                 try:
                     raw = s.recv(10240)
@@ -115,7 +121,6 @@ def cot_listener(host, port):
                         event_end = buffer.find("</event>") + 8
                         data = buffer[:event_end]
                         buffer = buffer[event_end:]
-                        
                         try:
                             if 'callsign="' in data:
                                 cs = universal_clean(data.split('callsign="')[1].split('"')[0])
@@ -125,13 +130,17 @@ def cot_listener(host, port):
                                 with UNITS_LOCK:
                                     UNITS_VAULT[cs] = {"callsign": cs, "uid": uid, "lat": safe_float(lat), "lng": safe_float(lon), "last_seen": time.time()}
                             
+                            # Captura selectiva de mensajes de chat
                             if '<__chat' in data or '<remarks>' in data:
                                 msg_text = ""
                                 if '<remarks>' in data: msg_text = universal_clean(data.split('<remarks>')[1].split('</remarks>')[0])
                                 elif '<content>' in data: msg_text = universal_clean(data.split('<content>')[1].split('</content>')[0])
                                 sender = "UNKNOWN"
                                 if 'senderCallsign="' in data: sender = universal_clean(data.split('senderCallsign="')[1].split('"')[0])
-                                if msg_text and sender != "UNKNOWN":
+                                elif 'callsign="' in data: sender = universal_clean(data.split('callsign="')[1].split('"')[0])
+                                
+                                if msg_text and sender != "UNKNOWN" and MY_REAL_UID not in data:
+                                    logger.info(f"[CHAT_IN] {sender}: {msg_text}")
                                     COMMS_VAULT.append({"sender": sender, "text": msg_text, "time": time.strftime("%H:%M:%S")})
                         except: pass
                 except socket.timeout: continue
@@ -143,19 +152,20 @@ def cot_listener(host, port):
 
 def presence_beacon(host, callsign, lat, lng):
     while MISSION_ACTIVE.is_set():
-        ts = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
-        stale = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() + 300))
+        ts = get_tak_timestamp()
+        stale = get_tak_timestamp(300)
         pretty_cs = universal_clean(callsign)
-        # Sincronizacion Final ATAK 5.x
+        # Identidad Droid completa
         xml = (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
                f'<event version="2.0" uid="{MY_REAL_UID}" type="a-f-G-U-C" time="{ts}" start="{ts}" stale="{stale}" how="m-g">'
                f'<point lat="{lat}" lon="{lng}" hae="0.0" ce="999" le="999"/>'
                f'<detail>'
                f'<contact endpoint="*:-1:stcp" callsign="{pretty_cs}"/>'
+               f'<uid nett="XX" Droid="{pretty_cs}"/>'
                f'<__group role="Team Member" name="Green"/>'
                f'<status battery="100"/>'
                f'<takv os="android" version="5.6.0.CIV" platform="ATAK-CIV"/>'
-               f'<__chat chatgrp_id="Green"/>'
+               f'<__chat chatgrp_id="All Chat"/>'
                f'<remarks>C2_ACTIVE</remarks>'
                f'</detail></event>')
         send_raw_cot(xml)
@@ -170,6 +180,7 @@ async def mission_control(action: str, host: str = None, callsign: str = "HQ", l
             MISSION_ACTIVE.set()
             threading.Thread(target=cot_listener, args=(host, 8087), daemon=True).start()
             threading.Thread(target=cot_listener, args=(host, 8088), daemon=True).start()
+            threading.Thread(target=cot_listener, args=(host, 8089), daemon=True).start()
             threading.Thread(target=presence_beacon, args=(host, callsign, safe_float(lat, 40.41), safe_float(lng, -3.70)), daemon=True).start()
         return {"status": "MISSION_DEPLOYED"}
     else:
