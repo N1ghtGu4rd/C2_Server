@@ -1,145 +1,123 @@
-/* TAK TACTICAL HUD - BOOTSTRAP OVERRIDES */
 :root {
-  --bg-dark: #000000;
-  --bg-panel: #0d0f12;
-  --accent-orange: #ff5500;
-  --accent-blue: #00d4ff;
+  --bg-black: #050608;
+  --panel-bg: #0d0f12;
+  --accent-orange: #ff9d00;
   --accent-green: #00ff41;
-  --text-dim: #6c757d;
-  --font-mono: 'JetBrains Mono', monospace;
+  --accent-red: #ff3e3e;
+  --accent-blue: #00d4ff;
+  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+  --header-h: 60px;
+  --nav-h: 70px;
 }
 
-body {
-  background-color: var(--bg-dark);
-  color: #fff;
-  font-family: 'Inter', sans-serif;
-  overflow-x: hidden;
-  user-select: none;
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+body, html {
+  margin: 0; padding: 0;
+  width: 100%; height: 100%;
+  background-color: var(--bg-black);
+  color: #fff; font-family: 'Inter', sans-serif;
+  overflow: hidden;
+  touch-action: manipulation;
 }
 
-.font-mono { font-family: var(--font-mono); }
-
-/* HUD Custom Cards */
-.tactical-card {
-  background-color: var(--bg-panel);
-  border: 1px solid #1f2328;
-  border-radius: 4px;
-  box-shadow: 0 4px 15px rgba(0,0,0,0.5);
-  transition: border-color 0.3s;
-}
-
-.tactical-card:hover {
-  border-color: var(--accent-orange);
-}
-
-.card-header-tactical {
-  font-size: 0.65rem;
-  font-weight: 900;
-  color: var(--text-dim);
-  text-transform: uppercase;
-  letter-spacing: 1.5px;
-  border-bottom: 1px solid #1f2328;
-  padding: 10px 15px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-/* Circular Gauges */
-.gauge-circle {
-  width: 110px;
-  height: 110px;
-  border-radius: 50%;
-  border: 2px solid #1f2328;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  position: relative;
-  margin: 0 auto;
-}
-
-.gauge-val {
-  font-family: var(--font-mono);
-  font-size: 1.4rem;
-  font-weight: 800;
-}
-
-.gauge-label {
-  font-size: 0.5rem;
-  font-weight: 900;
-  color: var(--text-dim);
-  margin-top: -5px;
-}
-
-/* Terminal Styling */
-.terminal-window {
+.tac-container {
+  width: 100%; height: 100vh;
+  display: flex; flex-direction: column;
   background: #000;
-  color: var(--accent-green);
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-  height: 300px;
-  padding: 15px;
-  border-radius: 0 0 4px 4px;
 }
 
-/* Controls */
-.btn-tactical {
-  background: #161b22;
+/* HEADER ADAPTATIVO */
+.tac-header {
+  height: var(--header-h);
+  padding: 0 15px;
+  display: flex; justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid #1a1d23;
+  background: rgba(13, 15, 18, 0.95);
+  backdrop-filter: blur(10px);
+  z-index: 100;
+}
+
+/* GRID DE SENSORES (OCULTO EN MÓVIL PEQUEÑO PARA GANAR ESPACIO) */
+.stats-grid {
+  display: grid; grid-template-columns: repeat(4, 1fr);
+  gap: 10px; padding: 10px;
+}
+
+/* LAYOUT PRINCIPAL */
+.main-layout {
+  flex-grow: 1;
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 10px; padding: 10px;
+  min-height: 0;
+}
+
+/* MOBILE VIEW SYSTEM */
+@media (max-width: 992px) {
+  .main-layout {
+    display: block; /* Forzamos bloque para el sistema de pestañas */
+    padding: 0;
+    position: relative;
+  }
+  .stats-grid {
+    grid-template-columns: repeat(2, 1fr);
+    padding: 5px;
+  }
+  .mobile-tab-content {
+    height: calc(100vh - var(--header-h) - var(--nav-h));
+    overflow: hidden;
+  }
+  .mobile-nav {
+    height: var(--nav-h);
+    background: #0d0f12;
+    border-top: 1px solid #30363d;
+    display: flex;
+    justify-content: space-around;
+    align-items: center;
+  }
+}
+
+/* CARDS HUD */
+.tac-card {
+  background: #0d0f12 !important;
+  border: 1px solid #30363d !important;
+  border-radius: 8px;
+  overflow: hidden;
+  display: flex; flex-direction: column;
+}
+
+.btn-ops {
+  min-height: 44px;
   border: 1px solid #30363d;
+  background: #1a1d23;
   color: #fff;
-  font-size: 0.7rem;
-  font-weight: 800;
-  padding: 12px;
+  border-radius: 6px;
+  display: flex; align-items: center; justify-content: center;
+  gap: 10px; font-weight: bold; font-size: 0.8rem;
   text-transform: uppercase;
-  transition: all 0.2s;
 }
 
-.btn-tactical:hover {
-  background: #21262d;
-  border-color: #8b949e;
-  color: #fff;
-}
-
-.btn-tactical:active {
-  background: var(--accent-orange);
-  color: #000;
-}
-
-/* Tactical Utilities */
-.bg-orange { background-color: var(--accent-orange) !important; }
-.text-orange { color: var(--accent-orange) !important; }
-.text-blue { color: var(--accent-blue) !important; }
-.text-green { color: var(--accent-green) !important; }
-.text-black { color: #000 !important; }
-.btn-orange { background-color: var(--accent-orange) !important; border-color: var(--accent-orange) !important; color: #000 !important; }
-
-/* Config Overlay */
-.config-full {
-  position: fixed;
-  top: 0; left: 0; width: 100%; height: 100%;
-  background: rgba(0,0,0,0.98);
-  z-index: 2000;
-  padding: 20px;
-}
+.btn-ops.orange { border-color: var(--accent-orange); color: var(--accent-orange); }
+.btn-ops.red { border-color: var(--accent-red); color: var(--accent-red); }
+.btn-ops.green { border-color: var(--accent-green); color: var(--accent-green); }
 
 .hud-input {
-  background: #0d0f12;
-  border: 1px solid #30363d;
-  color: #fff;
-  padding: 12px;
-  font-family: var(--font-mono);
-  border-radius: 4px;
+  background: #000; border: 1px solid #30363d;
+  color: var(--accent-orange); padding: 12px;
+  font-family: var(--font-mono); border-radius: 8px;
+  font-size: 16px; /* Evita zoom automático en iPhone */
 }
 
-.hud-input:focus {
-  border-color: var(--accent-orange);
-  box-shadow: 0 0 0 1px var(--accent-orange);
-}
-
-/* Responsive fixes */
-@media (max-width: 768px) {
-  .gauge-circle { width: 90px; height: 90px; }
-  .gauge-val { font-size: 1.1rem; }
-  .terminal-window { height: 250px; }
-}
+/* UTILS */
+.text-orange { color: var(--accent-orange) !important; }
+.bg-orange { background-color: var(--accent-orange) !important; color: #000 !important; }
+.shadow-glow { filter: drop-shadow(0 0 5px var(--accent-orange)); }
+.font-mono { font-family: var(--font-mono); }
+.w-100 { width: 100%; }
+.h-100 { height: 100%; }
+.p-3 { padding: 15px; }
+.d-flex { display: flex; }
+.flex-column { flex-direction: column; }
+.gap-2 { gap: 10px; }
