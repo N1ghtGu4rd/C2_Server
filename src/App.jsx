@@ -21,6 +21,8 @@ const App = () => {
   // --- OPS STATE ---
   const [band, setBand] = useState('A');
   const [activeTab, setActiveTab] = useState('TERMINAL');
+  const [recipient, setRecipient] = useState('ALL');
+  const [units, setUnits] = useState([]);
   const [stats, setStats] = useState({ cpu: 0, ram: 0, ram_u: 0, ram_t: 0, disk: '0%', temp: '0', fts: false, status: 'INIT', busy: false });
   const [termOutput, setTermOutput] = useState(['-- TACTICAL_HUD_V13_INITIALIZED --']);
   const [userInput, setUserInput] = useState('');
@@ -104,7 +106,7 @@ const App = () => {
   const sendComm = async () => {
     if (!userInput.trim() || !config) return;
     const target = band === 'A' ? config.ipA : config.ipB;
-    const msg = { sender: config.callsign, text: userInput, time: new Date().toLocaleTimeString(), target_host: target };
+    const msg = { sender: config.callsign, text: userInput, time: new Date().toLocaleTimeString(), target_host: target, recipient: recipient };
     setUserInput('');
     try {
       await fetch(`http://${config.proxy}:8001/api/v1/comms`, {
@@ -115,7 +117,7 @@ const App = () => {
     } catch (e) {}
   };
 
-  // --- COMMS POLL ---
+  // --- COMMS & UNITS POLL ---
   useEffect(() => {
     if (!config) return;
     const itv = setInterval(async () => {
@@ -123,6 +125,10 @@ const App = () => {
         const r = await fetch(`http://${config.proxy}:8001/api/v1/comms`);
         const d = await r.json();
         setMessages(d);
+
+        const r2 = await fetch(`http://${config.proxy}:8001/api/v1/units`);
+        const d2 = await r2.json();
+        setUnits(d2);
       } catch (e) {}
     }, 3000);
     return () => clearInterval(itv);
@@ -180,26 +186,38 @@ const App = () => {
                     <div className="vr mx-2 bg-secondary" style={{height: '15px'}}></div>
                     <div className={`cursor-pointer ${activeTab==='COMMS'?'text-orange':''}`} onClick={()=>setActiveTab('COMMS')}><MessageSquare size={14}/> COMMS</div>
                  </div>
-                 <div className="terminal-window d-flex flex-column">
+                 <div className="terminal-window d-flex">
                     {activeTab === 'TERMINAL' ? (
                       <div className="flex-grow-1 overflow-auto">
                         {termOutput.map((l, i) => <div key={i} className="mb-1">{l}</div>)}
                       </div>
                     ) : (
-                      <div className="flex-grow-1 overflow-auto p-2">
-                        {messages.length === 0 ? (
-                           <div className="text-white-50 small opacity-50">-- NO_MISSION_COMMS_DETECTED --</div>
-                        ) : (
-                          messages.map((m, i) => (
-                            <div key={i} className={`mb-3 ${m.sender === config.callsign ? 'text-end' : ''}`}>
-                               <div className={`d-inline-block p-1 px-3 rounded-1 ${m.sender === config.callsign ? 'bg-orange text-black' : 'bg-dark text-white'}`} style={{fontSize: '0.8rem', fontWeight: 800}}>
-                                  {m.text}
-                               </div>
-                               <div className="text-white-50 font-mono" style={{fontSize: '0.5rem'}}>{m.time} // {m.sender}</div>
-                            </div>
-                          ))
-                        )}
-                      </div>
+                      <>
+                        <div className="border-end border-dark pe-2 d-flex flex-column" style={{width: '120px'}}>
+                           <div className="small text-white-50 mb-2 fw-bold" style={{fontSize: '0.5rem'}}>CONTACTS</div>
+                           <div className={`cursor-pointer mb-1 p-1 small ${recipient==='ALL'?'bg-orange text-black fw-bold':''}`} onClick={()=>setRecipient('ALL')}>GLOBAL_NET</div>
+                           {units.map((u, i) => (
+                             <div key={i} className={`cursor-pointer mb-1 p-1 small text-truncate ${recipient===u.callsign?'bg-orange text-black fw-bold':''}`} onClick={()=>setRecipient(u.callsign)}>
+                               {u.callsign}
+                             </div>
+                           ))}
+                        </div>
+                        <div className="flex-grow-1 overflow-auto p-2">
+                          <div className="text-orange small mb-2 font-mono" style={{fontSize: '0.6rem'}}>{recipient === 'ALL' ? '>> BROADCAST_MODE' : `>> PRIVATE_TO: ${recipient}`}</div>
+                          {messages.length === 0 ? (
+                             <div className="text-white-50 small opacity-50">-- NO_MISSION_COMMS_DETECTED --</div>
+                          ) : (
+                            messages.filter(m => recipient === 'ALL' || m.recipient === recipient || m.sender === recipient).map((m, i) => (
+                              <div key={i} className={`mb-3 ${m.sender === config.callsign ? 'text-end' : ''}`}>
+                                 <div className={`d-inline-block p-1 px-3 rounded-1 ${m.sender === config.callsign ? 'bg-orange text-black' : 'bg-dark text-white'}`} style={{fontSize: '0.8rem', fontWeight: 800}}>
+                                    {m.text}
+                                 </div>
+                                 <div className="text-white-50 font-mono" style={{fontSize: '0.4rem'}}>{m.time} // {m.sender} {m.recipient !== 'ALL' ? `-> ${m.recipient}` : ''}</div>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      </>
                     )}
                  </div>
                  <div className="p-2 border-top border-dark d-flex gap-2 bg-black">

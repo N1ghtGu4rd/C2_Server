@@ -34,11 +34,15 @@ def parse_num(v):
     except:
         return 0.0
 
-def send_cot_chat(host, callsign, text):
-    """Envía un mensaje de chat en formato CoT al servidor ATAK remoto"""
+def send_cot_chat(host, callsign, text, recipient="ALL"):
+    """Envía un mensaje de chat militar (Global o Individual)"""
     try:
         timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        cot_xml = f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><event version="2.0" uid="CHAT-{callsign}" type="b-t-f" time="{timestamp}" start="{timestamp}" stale="{timestamp}" how="h-g-i-g-o"><point lat="0.0" lon="0.0" hae="0.0" ce="9999999" le="9999999"/><detail><chat parent="ALL" group="NONE" senderCallsign="{callsign}"><content>{text}</content></chat><link uid="CHAT-{callsign}" relation="p-p" type="a-f-G-U-C-I"/><remarks>{text}</remarks></detail></event>'
+        dest = "ALL" if recipient == "ALL" else recipient
+        uid = f"GeoChat.{callsign}.{dest}.{int(time.time())}"
+        
+        # Formato CoT para chat individual o de grupo
+        cot_xml = f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><event version="2.0" uid="{uid}" type="b-t-f" time="{timestamp}" start="{timestamp}" stale="{timestamp}" how="h-g-i-g-o"><point lat="0.0" lon="0.0" hae="0.0" ce="9999999" le="9999999"/><detail><__chat parent="{recipient}" group="NONE" senderCallsign="{callsign}" messageId="{uid}"><content>{text}</content></__chat><link uid="{callsign}" relation="p-p" type="a-f-G-U-C-I"/><remarks>{text}</remarks><marti><dest callsign="{dest}"/></marti></detail></event>'
         
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.sendto(cot_xml.encode('utf-8'), (host, 8087))
@@ -122,17 +126,21 @@ async def get_comms(): return COMMS_VAULT[-40:]
 @app.post("/api/v1/comms")
 async def send_comm(msg: dict):
     COMMS_VAULT.append(msg)
-    # Forward to ATAK (using the host from the message or default)
+    # Forward to ATAK
     target_host = msg.get('target_host', '127.0.0.1')
-    send_cot_chat(target_host, msg.get('sender', 'OP'), msg.get('text', ''))
+    send_cot_chat(target_host, msg.get('sender', 'OP'), msg.get('text', ''), msg.get('recipient', 'ALL'))
     return {"status": "success"}
 
 # Almacén de unidades detectadas
-UNITS_VAULT = [
-    {"callsign": "ALPHA-1", "lat": 40.4168, "lng": -3.7038, "status": "ACTIVE"},
-    {"callsign": "BRAVO-2", "lat": 40.4175, "lng": -3.7050, "status": "PATROL"}
-]
+UNITS_VAULT = []
 
 @app.get("/api/v1/units")
-async def get_units():
+async def get_units(host: str = "127.0.0.1"):
+    # Intentamos devolver unidades reales si están en el servidor (Simulación por ahora)
+    # En un entorno real, aquí haríamos un fetch al puerto 8080 de FTS
+    if not UNITS_VAULT:
+        return [
+            {"callsign": "OPERATOR-BLUE", "lat": 40.4168, "lng": -3.7038, "status": "ACTIVE"},
+            {"callsign": "SQUAD-RED", "lat": 40.4180, "lng": -3.7060, "status": "MOBILE"}
+        ]
     return UNITS_VAULT
