@@ -47,8 +47,8 @@ body {
 
 /* Circular Gauges */
 .gauge-circle {
-  width: 120px;
-  height: 120px;
+  width: 110px;
+  height: 110px;
   border-radius: 50%;
   border: 2px solid #1f2328;
   display: flex;
@@ -61,7 +61,7 @@ body {
 
 .gauge-val {
   font-family: var(--font-mono);
-  font-size: 1.6rem;
+  font-size: 1.4rem;
   font-weight: 800;
 }
 
@@ -79,7 +79,6 @@ body {
   font-family: var(--font-mono);
   font-size: 0.75rem;
   height: 300px;
-  overflow-y: auto;
   padding: 15px;
   border-radius: 0 0 4px 4px;
 }
@@ -107,6 +106,14 @@ body {
   color: #000;
 }
 
+/* Tactical Utilities */
+.bg-orange { background-color: var(--accent-orange) !important; }
+.text-orange { color: var(--accent-orange) !important; }
+.text-blue { color: var(--accent-blue) !important; }
+.text-green { color: var(--accent-green) !important; }
+.text-black { color: #000 !important; }
+.btn-orange { background-color: var(--accent-orange) !important; border-color: var(--accent-orange) !important; color: #000 !important; }
+
 /* Config Overlay */
 .config-full {
   position: fixed;
@@ -132,6 +139,7 @@ body {
 
 /* Responsive fixes */
 @media (max-width: 768px) {
-  .gauge-circle { width: 100px; height: 100px; }
-  .gauge-val { font-size: 1.3rem; }
+  .gauge-circle { width: 90px; height: 90px; }
+  .gauge-val { font-size: 1.1rem; }
+  .terminal-window { height: 250px; }
 }

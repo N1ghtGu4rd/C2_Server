@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import paramiko
 import os
 import time
+import socket
 from pydantic import BaseModel
 from typing import List, Optional
 
@@ -32,6 +33,20 @@ def parse_num(v):
         return float(clean.replace(',', '.'))
     except:
         return 0.0
+
+def send_cot_chat(host, callsign, text):
+    """Envía un mensaje de chat en formato CoT al servidor ATAK remoto"""
+    try:
+        timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        cot_xml = f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><event version="2.0" uid="CHAT-{callsign}" type="b-t-f" time="{timestamp}" start="{timestamp}" stale="{timestamp}" how="h-g-i-g-o"><point lat="0.0" lon="0.0" hae="0.0" ce="9999999" le="9999999"/><detail><chat parent="ALL" group="NONE" senderCallsign="{callsign}"><content>{text}</content></chat><link uid="CHAT-{callsign}" relation="p-p" type="a-f-G-U-C-I"/><remarks>{text}</remarks></detail></event>'
+        
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.sendto(cot_xml.encode('utf-8'), (host, 8087))
+        sock.close()
+        return True
+    except Exception as e:
+        print(f"COT_SEND_ERROR: {str(e)}")
+        return False
 
 def run_async_task(host, port, user, password, command, action_name):
     global ASYNC_STATUS
@@ -107,4 +122,17 @@ async def get_comms(): return COMMS_VAULT[-40:]
 @app.post("/api/v1/comms")
 async def send_comm(msg: dict):
     COMMS_VAULT.append(msg)
+    # Forward to ATAK (using the host from the message or default)
+    target_host = msg.get('target_host', '127.0.0.1')
+    send_cot_chat(target_host, msg.get('sender', 'OP'), msg.get('text', ''))
     return {"status": "success"}
+
+# Almacén de unidades detectadas
+UNITS_VAULT = [
+    {"callsign": "ALPHA-1", "lat": 40.4168, "lng": -3.7038, "status": "ACTIVE"},
+    {"callsign": "BRAVO-2", "lat": 40.4175, "lng": -3.7050, "status": "PATROL"}
+]
+
+@app.get("/api/v1/units")
+async def get_units():
+    return UNITS_VAULT

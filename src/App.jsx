@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { 
   Cpu, Database, HardDrive, Thermometer, Target, Signal, 
   Settings, X, Power, RefreshCw, Download, Terminal as TermIcon, 
@@ -101,6 +101,33 @@ const App = () => {
     } catch (e) { addNotif('CONN_ERROR', 'danger'); }
   };
 
+  const sendComm = async () => {
+    if (!userInput.trim() || !config) return;
+    const target = band === 'A' ? config.ipA : config.ipB;
+    const msg = { sender: config.callsign, text: userInput, time: new Date().toLocaleTimeString(), target_host: target };
+    setUserInput('');
+    try {
+      await fetch(`http://${config.proxy}:8001/api/v1/comms`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(msg)
+      });
+    } catch (e) {}
+  };
+
+  // --- COMMS POLL ---
+  useEffect(() => {
+    if (!config) return;
+    const itv = setInterval(async () => {
+      try {
+        const r = await fetch(`http://${config.proxy}:8001/api/v1/comms`);
+        const d = await r.json();
+        setMessages(d);
+      } catch (e) {}
+    }, 3000);
+    return () => clearInterval(itv);
+  }, [config]);
+
   if (!config && !isConfigOpen) return null;
 
   return (
@@ -123,7 +150,7 @@ const App = () => {
       {/* MAIN HUD */}
       <main className="p-3">
         {/* GAUGES ROW */}
-        <div className="row g-3 mb-3 text-center">
+        <div className="row g-3 mb-3 text-center align-items-stretch">
            {[
              { val: stats.cpu, label: 'CPU_LOAD', icon: <Cpu size={14}/>, color: 'text-orange' },
              { val: stats.ram, label: 'MEM_UTIL', icon: <Database size={14}/>, color: 'text-blue' },
@@ -131,12 +158,13 @@ const App = () => {
              { val: stats.disk, label: 'DISK_CAP', icon: <HardDrive size={14}/>, color: 'text-white' }
            ].map((g, i) => (
              <div key={i} className="col-6 col-md-3">
-                <div className="tactical-card p-3">
+                <div className="tactical-card p-3 h-100 d-flex flex-column align-items-center justify-content-center">
                    <div className="gauge-circle mb-2">
                       <div className={`gauge-val ${g.color}`}>{g.val}<span style={{fontSize: '0.6rem'}}>{g.label==='DISK_CAP'?'':'%'}</span></div>
                       <div className="gauge-label">{g.label}</div>
                    </div>
-                   {g.label === 'MEM_UTIL' && <div className="small text-white-50 font-mono" style={{fontSize: '0.5rem'}}>{stats.ram_u}M/{stats.ram_t}M</div>}
+                   {g.label === 'MEM_UTIL' && <div className="small text-white-50 font-mono w-100 text-center" style={{fontSize: '0.5rem', marginTop: '2px'}}>{stats.ram_u}M/{stats.ram_t}M</div>}
+                   {g.label !== 'MEM_UTIL' && <div style={{height: '10px'}}></div> /* Placeholder para mantener simetría */}
                 </div>
              </div>
            ))}
@@ -152,19 +180,43 @@ const App = () => {
                     <div className="vr mx-2 bg-secondary" style={{height: '15px'}}></div>
                     <div className={`cursor-pointer ${activeTab==='COMMS'?'text-orange':''}`} onClick={()=>setActiveTab('COMMS')}><MessageSquare size={14}/> COMMS</div>
                  </div>
-                 <div className="terminal-window">
+                 <div className="terminal-window d-flex flex-column">
                     {activeTab === 'TERMINAL' ? (
-                      termOutput.map((l, i) => <div key={i} className="mb-1">{l}</div>)
+                      <div className="flex-grow-1 overflow-auto">
+                        {termOutput.map((l, i) => <div key={i} className="mb-1">{l}</div>)}
+                      </div>
                     ) : (
-                      <div className="text-white-50 small opacity-50">-- SECURE_COMMS_WAITING_FOR_DATA --</div>
+                      <div className="flex-grow-1 overflow-auto p-2">
+                        {messages.length === 0 ? (
+                           <div className="text-white-50 small opacity-50">-- NO_MISSION_COMMS_DETECTED --</div>
+                        ) : (
+                          messages.map((m, i) => (
+                            <div key={i} className={`mb-3 ${m.sender === config.callsign ? 'text-end' : ''}`}>
+                               <div className={`d-inline-block p-1 px-3 rounded-1 ${m.sender === config.callsign ? 'bg-orange text-black' : 'bg-dark text-white'}`} style={{fontSize: '0.8rem', fontWeight: 800}}>
+                                  {m.text}
+                               </div>
+                               <div className="text-white-50 font-mono" style={{fontSize: '0.5rem'}}>{m.time} // {m.sender}</div>
+                            </div>
+                          ))
+                        )}
+                      </div>
                     )}
                  </div>
-                 {activeTab === 'TERMINAL' && (
-                   <div className="p-2 border-top border-dark d-flex gap-2">
-                      <span className="text-orange fw-bold">{">"}</span>
-                      <input type="text" className="bg-transparent border-0 text-white flex-grow-1 outline-none font-mono small" style={{outline: 'none'}} value={userInput} onChange={e=>setUserInput(e.target.value)} onKeyPress={e=>e.key==='Enter'&&execCmd(userInput)} placeholder="ENTER_CMD..." />
-                   </div>
-                 )}
+                 <div className="p-2 border-top border-dark d-flex gap-2 bg-black">
+                    <span className="text-orange fw-bold">{activeTab === 'TERMINAL' ? '>' : '#'}</span>
+                    <input 
+                      type="text" 
+                      className="bg-transparent border-0 text-white flex-grow-1 outline-none font-mono small" 
+                      style={{outline: 'none'}} 
+                      value={userInput} 
+                      onChange={e=>setUserInput(e.target.value)} 
+                      onKeyPress={e=>e.key==='Enter' && (activeTab === 'TERMINAL' ? execCmd(userInput) : sendComm())} 
+                      placeholder={activeTab === 'TERMINAL' ? "ENTER_CMD..." : "TYPE_MSG..."} 
+                    />
+                    <button className="btn btn-sm btn-orange border-0" onClick={() => activeTab === 'TERMINAL' ? execCmd(userInput) : sendComm()}>
+                      <Send size={14} className="text-black" />
+                    </button>
+                 </div>
               </div>
            </div>
 
@@ -173,8 +225,8 @@ const App = () => {
               <div className="tactical-card" style={{height: '350px'}}>
                  <div className="card-header-tactical"><MapIcon size={14}/> GEOSPATIAL_INTEL</div>
                  <div className="position-relative h-100 w-100 overflow-hidden">
-                    <iframe className="w-100 h-100 border-0" style={{filter: 'grayscale(1) brightness(0.5) contrast(1.4)'}} src={`https://maps.google.com/maps?q=40.4168,-3.7038&t=k&z=15&ie=UTF8&iwloc=&output=embed`}></iframe>
-                    <div className="position-absolute bottom-0 start-0 p-2 bg-black bg-opacity-75 font-mono" style={{fontSize: '0.5rem'}}>
+                    <GoogleMapHUD config={config} band={band} stats={stats} />
+                    <div className="position-absolute bottom-0 start-0 p-2 bg-black bg-opacity-75 font-mono" style={{fontSize: '0.5rem', zIndex: 10}}>
                        <Shield size={10} className={stats.fts?'text-green':'text-danger'} /> FTS_{stats.fts?'STABLE':'DOWN'} // LINK_BAND_{band}
                     </div>
                  </div>
@@ -183,10 +235,10 @@ const App = () => {
         </div>
 
         {/* ACTIONS ROW */}
-        <div className="row g-2 pb-5">
-           <div className="col-4"><button className="btn btn-tactical w-100" onClick={()=>setBand(prev=>prev==='A'?'B':'A')}><Signal size={14}/> BAND_{band==='A'?'B':'A'}</button></div>
-           <div className="col-4"><button className={`btn btn-tactical w-100 ${stats.busy?'opacity-50':''}`} onClick={()=>triggerAction('update')}><Download size={14}/> {stats.busy?'BUSY':'UPDATE'}</button></div>
-           <div className="col-4"><button className="btn btn-tactical w-100" onClick={()=>triggerAction('reboot')}><RefreshCw size={14}/> REBOOT</button></div>
+        <div className="row g-2 mt-auto pt-3">
+           <div className="col-4"><button className="btn btn-tactical w-100 py-3" onClick={()=>setBand(prev=>prev==='A'?'B':'A')}><Signal size={14}/> BAND_{band==='A'?'B':'A'}</button></div>
+           <div className="col-4"><button className={`btn btn-tactical w-100 py-3 ${stats.busy?'opacity-50':''}`} onClick={()=>triggerAction('update')}><Download size={14}/> {stats.busy?'BUSY':'UPDATE'}</button></div>
+           <div className="col-4"><button className="btn btn-tactical w-100 py-3 text-danger" onClick={()=>triggerAction('reboot')}><Power size={14}/> REBOOT</button></div>
         </div>
       </main>
 
@@ -252,6 +304,75 @@ const App = () => {
 
     </div>
   );
+};
+
+const GoogleMapHUD = ({ config, band, stats }) => {
+  const mapRef = useRef(null);
+  const [map, setMap] = useState(null);
+  const [markers, setMarkers] = useState({});
+
+  useEffect(() => {
+    const initMap = () => {
+      if (!mapRef.current || !window.google || !window.google.maps) return;
+      const m = new window.google.maps.Map(mapRef.current, {
+        center: { lat: 40.4168, lng: -3.7038 },
+        zoom: 15,
+        mapTypeId: 'satellite',
+        disableDefaultUI: true,
+        styles: [{ featureType: 'all', elementType: 'labels', stylers: [{ visibility: 'on' }] }]
+      });
+      setMap(m);
+    };
+
+    if (window.google) {
+      initMap();
+    } else {
+      const itv = setInterval(() => {
+        if (window.google) {
+          initMap();
+          clearInterval(itv);
+        }
+      }, 500);
+      return () => clearInterval(itv);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!map || !config) return;
+    const fetchUnits = async () => {
+      try {
+        const r = await fetch(`http://${config.proxy}:8001/api/v1/units`);
+        const units = await r.json();
+        
+        // Update markers
+        const newMarkers = { ...markers };
+        units.forEach(u => {
+          if (!newMarkers[u.callsign]) {
+            newMarkers[u.callsign] = new window.google.maps.Marker({
+              position: { lat: u.lat, lng: u.lng },
+              map,
+              label: { text: u.callsign, color: '#ff5500', fontWeight: 'bold', fontSize: '10px' },
+              icon: {
+                path: window.google.maps.SymbolPath.FORWARD_CLOSED_ARROW,
+                scale: 5,
+                fillColor: '#ff5500',
+                fillOpacity: 1,
+                strokeWeight: 2,
+                rotation: 0
+              }
+            });
+          } else {
+            newMarkers[u.callsign].setPosition({ lat: u.lat, lng: u.lng });
+          }
+        });
+        setMarkers(newMarkers);
+      } catch (e) {}
+    };
+    const itv = setInterval(fetchUnits, 5000);
+    return () => clearInterval(itv);
+  }, [map, config, markers]);
+
+  return <div ref={mapRef} className="w-100 h-100" style={{ filter: 'grayscale(0.6) brightness(0.7)' }}></div>;
 };
 
 export default App;
