@@ -1,277 +1,255 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
-  Activity, 
-  Users, 
-  Power, 
-  Cpu, 
-  Database,
-  Eye,
-  EyeOff,
-  RefreshCw,
-  Signal,
-  Lock,
-  Settings,
-  Save,
-  X,
-  Map as MapIcon,
-  Wifi,
-  Clock,
-  Shield,
-  Server,
-  Radio,
-  FileText,
-  AlertTriangle,
-  ChevronRight,
-  Terminal,
-  Zap,
-  Globe
+  Cpu, Database, HardDrive, Thermometer, Target, Signal, 
+  Settings, X, Power, RefreshCw, Download, Terminal as TermIcon, 
+  MessageSquare, Map as MapIcon, Send, AlertTriangle, Shield, CheckCircle
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 const App = () => {
-  const [isNightVision, setIsNightVision] = useState(false);
-  const [showConfig, setShowConfig] = useState(false);
-  const [activeTab, setActiveTab] = useState('DASHBOARD');
-  const [isSecure, setIsSecure] = useState(true);
-
+  // --- CONFIG PERSISTENCE ---
   const [config, setConfig] = useState(() => {
-    const saved = localStorage.getItem('tak_c2_v3_config');
-    return saved ? JSON.parse(saved) : { 
-      primaryIp: '192.168.1.60', 
-      secondaryIp: '172.26.197.97',
-      apiPort: '8080',
-      sshPort: '22',
-      ztId: 'd5e5eada668fXXXX',
-      apiKey: 'FTS-TAK-COMMAND-01',
-      callsign: 'COMMANDER-HQ'
-    };
+    const saved = localStorage.getItem('tak_bootstrap_v13_cfg');
+    return saved ? JSON.parse(saved) : null;
   });
 
-  const [stats, setStats] = useState({
-    cpu: 18,
-    ram: 4.2,
-    disk: 22,
-    clients: 6,
-    uptime: '14:22:05'
+  const [isConfigOpen, setIsConfigOpen] = useState(!config);
+  const [tempCfg, setTempCfg] = useState(config || {
+    ipA: '', ipB: '', user: 'server-tak', pass: 'C3rv3rus', proxy: 'localhost', callsign: 'HQ-OPERATOR', sshPort: '22'
   });
 
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setStats(prev => ({
-        ...prev,
-        cpu: Math.floor(Math.random() * 15 + 10),
-        ram: (Math.random() * 0.2 + 4.1).toFixed(1),
-        clients: Math.floor(Math.random() * 2 + 5)
-      }));
-    }, 3000);
-    return () => clearInterval(timer);
-  }, []);
+  // --- OPS STATE ---
+  const [band, setBand] = useState('A');
+  const [activeTab, setActiveTab] = useState('TERMINAL');
+  const [stats, setStats] = useState({ cpu: 0, ram: 0, ram_u: 0, ram_t: 0, disk: '0%', temp: '0', fts: false, status: 'INIT', busy: false });
+  const [termOutput, setTermOutput] = useState(['-- TACTICAL_HUD_V13_INITIALIZED --']);
+  const [userInput, setUserInput] = useState('');
+  const [messages, setMessages] = useState([]);
+  const [zuluTime, setZuluTime] = useState('--:--:--Z');
+  const [notifs, setNotifs] = useState([]);
 
-  const toggleNightVision = () => {
-    setIsNightVision(!isNightVision);
-    document.documentElement.setAttribute('data-theme', !isNightVision ? 'night-vision' : 'default');
+  const addNotif = (text, type = 'info') => {
+    const id = Date.now();
+    setNotifs(prev => [...prev, { id, text, type }]);
+    setTimeout(() => setNotifs(prev => prev.filter(n => n.id !== id)), 4000);
   };
 
-  return (
-    <div className="c2-container">
-      {/* Top Mission Header */}
-      <header className="c2-header">
-        <div className="header-left">
-          <div className="status-dot-active"></div>
-          <div>
-            <div className="header-title">TAK COMMAND & CONTROL</div>
-            <div className="header-subtitle">HOST: {config.primaryIp} // {config.callsign}</div>
-          </div>
-        </div>
-        <div className="header-right">
-          <div className="uptime-box">
-            <Clock size={12} /> {stats.uptime}
-          </div>
-          <button className="icon-btn" onClick={() => setShowConfig(true)}>
-            <Settings size={20} />
-          </button>
-        </div>
-      </header>
+  const addTerm = (line) => setTermOutput(prev => [...prev, `[${new Date().toLocaleTimeString()}] ${line}`].slice(-20));
 
-      {/* Main Tab Navigation */}
-      <nav className="c2-nav">
-        {['DASHBOARD', 'CLIENTS', 'SYSTEM', 'LOGS'].map(tab => (
-          <button 
-            key={tab} 
-            className={`nav-item ${activeTab === tab ? 'active' : ''}`}
-            onClick={() => setActiveTab(tab)}
-          >
-            {tab}
-          </button>
-        ))}
+  // --- CLOCK ---
+  useEffect(() => {
+    const t = setInterval(() => setZuluTime(new Date().toISOString().substring(11, 19) + 'Z'), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  // --- TELEMETRY ---
+  useEffect(() => {
+    if (!config) return;
+    const poll = async () => {
+      const target = band === 'A' ? config.ipA : config.ipB;
+      if (!target) return;
+      try {
+        const r = await fetch(`http://${config.proxy}:8001/api/v1/telemetry`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ host: target, port: parseInt(config.sshPort), user: config.user, password: config.pass }),
+          signal: AbortSignal.timeout(4000)
+        });
+        const d = await r.json();
+        if (d.status === 'success') {
+          setStats({ cpu: d.cpu, ram: d.ram.perc, ram_u: d.ram.used, ram_t: d.ram.total, disk: d.disk, temp: d.temp, fts: d.fts, status: 'OPERATIONAL', busy: d.busy });
+        } else { throw new Error(d.detail); }
+      } catch (e) {
+        setStats(prev => ({ ...prev, status: 'OFFLINE' }));
+        setBand(prev => prev === 'A' ? 'B' : 'A');
+        addNotif('AUTO_BAND_SWITCHING...', 'warning');
+      }
+    };
+    const itv = setInterval(poll, 7000);
+    poll();
+    return () => clearInterval(itv);
+  }, [config, band]);
+
+  // --- ACTIONS ---
+  const execCmd = async (c) => {
+    if (!c || !config) return;
+    addTerm(`> ${c}`);
+    setUserInput('');
+    const target = band === 'A' ? config.ipA : config.ipB;
+    try {
+      const r = await fetch(`http://${config.proxy}:8001/api/v1/terminal`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ host: target, port: parseInt(config.sshPort), user: config.user, password: config.pass, command: c })
+      });
+      const d = await r.json();
+      addTerm(d.output || d.detail);
+    } catch (e) { addTerm('ERR: PROXY_NOT_REACHABLE'); }
+  };
+
+  const triggerAction = async (act) => {
+    if (!config || !confirm(`CONFIRM_SYS_${act.toUpperCase()}?`)) return;
+    const target = band === 'A' ? config.ipA : config.ipB;
+    try {
+      const r = await fetch(`http://${config.proxy}:8001/api/v1/action?action=${act}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ host: target, port: parseInt(config.sshPort), user: config.user, password: config.pass })
+      });
+      const d = await r.json();
+      if (d.status === 'success') addNotif(`${act.toUpperCase()}_DISPATCHED`, 'success');
+    } catch (e) { addNotif('CONN_ERROR', 'danger'); }
+  };
+
+  if (!config && !isConfigOpen) return null;
+
+  return (
+    <div className="container-fluid p-0">
+      
+      {/* TOP NAV / HUD */}
+      <nav className="navbar navbar-dark bg-black border-bottom border-dark px-3" style={{height: '60px'}}>
+        <div className="d-flex align-items-center gap-3">
+          <div className="fw-900 text-orange" style={{letterSpacing: '2px'}}>TAK_BRIDGE_PRO</div>
+          <span className="badge bg-dark border border-secondary font-mono small" style={{fontSize: '0.6rem'}}>
+            {config?.callsign} // <span className={stats.status==='OPERATIONAL'?'text-green':'text-danger'}>{stats.status}</span>
+          </span>
+        </div>
+        <div className="d-flex align-items-center gap-4">
+           <div className="text-orange font-mono fw-bold">{zuluTime}</div>
+           <Settings size={20} className="text-white-50 cursor-pointer" onClick={() => setIsConfigOpen(true)} />
+        </div>
       </nav>
 
-      {/* Dynamic Viewport */}
-      <main className="c2-viewport">
-        <AnimatePresence mode="wait">
-          {activeTab === 'DASHBOARD' && (
-            <motion.div 
-              key="dashboard"
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -10 }}
-              className="tab-content"
-            >
-              {/* Critical Stats Grid */}
-              <div className="stats-grid">
-                <div className="c2-card">
-                  <div className="card-label"><Cpu size={12} /> CPU LOAD</div>
-                  <div className="card-value">{stats.cpu}%</div>
-                  <div className="progress-bar"><div className="fill" style={{ width: `${stats.cpu}%` }} /></div>
+      {/* MAIN HUD */}
+      <main className="p-3">
+        {/* GAUGES ROW */}
+        <div className="row g-3 mb-3 text-center">
+           {[
+             { val: stats.cpu, label: 'CPU_LOAD', icon: <Cpu size={14}/>, color: 'text-orange' },
+             { val: stats.ram, label: 'MEM_UTIL', icon: <Database size={14}/>, color: 'text-blue' },
+             { val: stats.temp, label: 'CORE_TEMP', icon: <Thermometer size={14}/>, color: stats.temp > 70 ? 'text-danger' : 'text-green' },
+             { val: stats.disk, label: 'DISK_CAP', icon: <HardDrive size={14}/>, color: 'text-white' }
+           ].map((g, i) => (
+             <div key={i} className="col-6 col-md-3">
+                <div className="tactical-card p-3">
+                   <div className="gauge-circle mb-2">
+                      <div className={`gauge-val ${g.color}`}>{g.val}<span style={{fontSize: '0.6rem'}}>{g.label==='DISK_CAP'?'':'%'}</span></div>
+                      <div className="gauge-label">{g.label}</div>
+                   </div>
+                   {g.label === 'MEM_UTIL' && <div className="small text-white-50 font-mono" style={{fontSize: '0.5rem'}}>{stats.ram_u}M/{stats.ram_t}M</div>}
                 </div>
-                <div className="c2-card">
-                  <div className="card-label"><Database size={12} /> RAM USAGE</div>
-                  <div className="card-value">{stats.ram}GB</div>
-                  <div className="progress-bar"><div className="fill" style={{ width: `${(stats.ram/16)*100}%` }} /></div>
-                </div>
-                <div className="c2-card">
-                  <div className="card-label"><Users size={12} /> ACTIVE TAK UNITS</div>
-                  <div className="card-value" style={{ color: 'var(--c2-accent)' }}>0{stats.clients}</div>
-                </div>
-                <div className="c2-card">
-                  <div className="card-label"><Signal size={12} /> NETWORK LATENCY</div>
-                  <div className="card-value">12MS</div>
-                </div>
-              </div>
+             </div>
+           ))}
+        </div>
 
-              {/* Tactical Overview */}
-              <div className="c2-card" style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-                <div className="card-label"><MapIcon size={12} /> GEOSPATIAL COMMAND OVERVIEW</div>
-                <div className="tactical-map">
-                  {/* Mock Map Background */}
-                  <div className="map-overlay">
-                    <div className="unit-marker" style={{ top: '30%', left: '40%' }}>ALPHA-01</div>
-                    <div className="unit-marker" style={{ top: '60%', left: '70%' }}>RECON-2</div>
-                  </div>
-                </div>
+        {/* OPS ROW */}
+        <div className="row g-3 mb-3">
+           {/* TERMINAL */}
+           <div className="col-12 col-lg-7">
+              <div className="tactical-card h-100 d-flex flex-column">
+                 <div className="card-header-tactical">
+                    <div className={`cursor-pointer ${activeTab==='TERMINAL'?'text-orange':''}`} onClick={()=>setActiveTab('TERMINAL')}><TermIcon size={14}/> TERMINAL</div>
+                    <div className="vr mx-2 bg-secondary" style={{height: '15px'}}></div>
+                    <div className={`cursor-pointer ${activeTab==='COMMS'?'text-orange':''}`} onClick={()=>setActiveTab('COMMS')}><MessageSquare size={14}/> COMMS</div>
+                 </div>
+                 <div className="terminal-window">
+                    {activeTab === 'TERMINAL' ? (
+                      termOutput.map((l, i) => <div key={i} className="mb-1">{l}</div>)
+                    ) : (
+                      <div className="text-white-50 small opacity-50">-- SECURE_COMMS_WAITING_FOR_DATA --</div>
+                    )}
+                 </div>
+                 {activeTab === 'TERMINAL' && (
+                   <div className="p-2 border-top border-dark d-flex gap-2">
+                      <span className="text-orange fw-bold">{">"}</span>
+                      <input type="text" className="bg-transparent border-0 text-white flex-grow-1 outline-none font-mono small" style={{outline: 'none'}} value={userInput} onChange={e=>setUserInput(e.target.value)} onKeyPress={e=>e.key==='Enter'&&execCmd(userInput)} placeholder="ENTER_CMD..." />
+                   </div>
+                 )}
               </div>
+           </div>
 
-              {/* Fast Action Dock */}
-              <div className="action-dock">
-                <button className="action-btn" onClick={toggleNightVision}>
-                  {isNightVision ? <EyeOff size={18} /> : <Eye size={18} />}
-                  <span>NIGHT VISION</span>
-                </button>
-                <button className="action-btn" onClick={() => setIsSecure(!isSecure)}>
-                  <Shield size={18} color={isSecure ? 'var(--c2-accent)' : '#ff4444'} />
-                  <span>SECURE MODE</span>
-                </button>
-                <button className="action-btn warning" onClick={() => alert('REBOOTING FTS SERVICE...')}>
-                  <RefreshCw size={18} />
-                  <span>RESTART SERVICE</span>
-                </button>
-                <button className="action-btn critical" onClick={() => confirm('INITIATE SERVER SHUTDOWN?')}>
-                  <Power size={18} />
-                  <span>TERMINATE</span>
-                </button>
-              </div>
-            </motion.div>
-          )}
-
-          {activeTab === 'CLIENTS' && (
-            <motion.div key="clients" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="tab-content">
-              <div className="c2-card">
-                <div className="card-label">CONNECTED TACTICAL UNITS</div>
-                <div className="client-list">
-                  {['KILO-1', 'SIERRA-4', 'VICTOR-2', 'HOTEL-3'].map(id => (
-                    <div key={id} className="client-row">
-                      <div className="client-id">{id}</div>
-                      <div className="client-meta">ONLINE // 192.168.1.{(Math.random()*100).toFixed(0)}</div>
-                      <div className="client-actions">
-                        <button onClick={() => alert(`Kicking ${id}`)}>KICK</button>
-                        <button onClick={() => alert(`Messaging ${id}`)}>MSG</button>
-                      </div>
+           {/* MAP */}
+           <div className="col-12 col-lg-5">
+              <div className="tactical-card" style={{height: '350px'}}>
+                 <div className="card-header-tactical"><MapIcon size={14}/> GEOSPATIAL_INTEL</div>
+                 <div className="position-relative h-100 w-100 overflow-hidden">
+                    <iframe className="w-100 h-100 border-0" style={{filter: 'grayscale(1) brightness(0.5) contrast(1.4)'}} src={`https://maps.google.com/maps?q=40.4168,-3.7038&t=k&z=15&ie=UTF8&iwloc=&output=embed`}></iframe>
+                    <div className="position-absolute bottom-0 start-0 p-2 bg-black bg-opacity-75 font-mono" style={{fontSize: '0.5rem'}}>
+                       <Shield size={10} className={stats.fts?'text-green':'text-danger'} /> FTS_{stats.fts?'STABLE':'DOWN'} // LINK_BAND_{band}
                     </div>
-                  ))}
-                </div>
+                 </div>
               </div>
-            </motion.div>
-          )}
-          
-          {activeTab === 'LOGS' && (
-            <motion.div key="logs" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="tab-content">
-              <div className="c2-card console-view">
-                <div className="card-label"><Terminal size={12} /> SYSTEM_KERNEL_LOGS</div>
-                <div className="console-text">
-                  [14:22:01] INFO: FTS Core initialized on port {config.apiPort}<br/>
-                  [14:22:05] AUTH: User KILO-1 connected via ZeroTier<br/>
-                  [14:22:12] WARN: Encryption handshake latency &gt; 50ms<br/>
-                  [14:23:00] INFO: Periodic database optimization complete<br/>
-                  <span className="cursor-blink">_</span>
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+           </div>
+        </div>
+
+        {/* ACTIONS ROW */}
+        <div className="row g-2 pb-5">
+           <div className="col-4"><button className="btn btn-tactical w-100" onClick={()=>setBand(prev=>prev==='A'?'B':'A')}><Signal size={14}/> BAND_{band==='A'?'B':'A'}</button></div>
+           <div className="col-4"><button className={`btn btn-tactical w-100 ${stats.busy?'opacity-50':''}`} onClick={()=>triggerAction('update')}><Download size={14}/> {stats.busy?'BUSY':'UPDATE'}</button></div>
+           <div className="col-4"><button className="btn btn-tactical w-100" onClick={()=>triggerAction('reboot')}><RefreshCw size={14}/> REBOOT</button></div>
+        </div>
       </main>
 
-      {/* Advanced Settings Overlay */}
+      {/* NOTIFS */}
+      <div className="position-fixed top-0 start-50 translate-middle-x mt-3" style={{zIndex: 3000, width: '280px'}}>
+         <AnimatePresence>
+            {notifs.map(n => (
+              <motion.div key={n.id} initial={{y: -20, opacity: 0}} animate={{y: 0, opacity: 1}} exit={{opacity: 0}} className={`alert alert-${n.type === 'danger' ? 'danger' : 'success'} bg-black border-${n.type} text-white p-2 d-flex align-items-center gap-2 mb-2`}>
+                 <Info size={16} /> <span className="small fw-bold">{n.text}</span>
+              </motion.div>
+            ))}
+         </AnimatePresence>
+      </div>
+
+      {/* CONFIG MODAL */}
       <AnimatePresence>
-        {showConfig && (
-          <motion.div className="settings-panel" initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}>
-            <div className="settings-header">
-              <div className="title">COMMANDER CONFIGURATION</div>
-              <X size={24} onClick={() => setShowConfig(false)} style={{ cursor: 'pointer' }} />
-            </div>
-            
-            <div className="settings-scroll">
-              <div className="config-section">
-                <div className="section-label">NETWORK INTERFACES</div>
-                <div className="input-group">
-                  <label>PRIMARY HOST IP (LAN)</label>
-                  <input type="text" value={config.primaryIp} onChange={e => setConfig({...config, primaryIp: e.target.value})} />
-                </div>
-                <div className="input-group">
-                  <label>SECONDARY HOST IP (WAN)</label>
-                  <input type="text" value={config.secondaryIp} onChange={e => setConfig({...config, secondaryIp: e.target.value})} />
-                </div>
-                <div className="input-group">
-                  <label>ZEROTIER NETWORK ID</label>
-                  <input type="text" value={config.ztId} onChange={e => setConfig({...config, ztId: e.target.value})} />
-                </div>
+         {isConfigOpen && (
+           <motion.div className="config-full" initial={{opacity: 0}} animate={{opacity: 1}} exit={{opacity: 0}}>
+              <div className="container-fluid p-0">
+                 <div className="d-flex justify-content-between align-items-center mb-4">
+                    <div className="text-orange fw-900">MISSION_SETUP</div>
+                    {config && <X className="cursor-pointer" onClick={()=>setIsConfigOpen(false)} />}
+                 </div>
+                 <div className="row g-3">
+                    <div className="col-6">
+                       <label className="text-white-50 small fw-bold mb-1 d-block">PRIMARY_IP (BAND_A)</label>
+                       <input type="text" className="hud-input w-100" value={tempCfg.ipA} onChange={e=>setTempCfg({...tempCfg, ipA: e.target.value})} />
+                    </div>
+                    <div className="col-6">
+                       <label className="text-white-50 small fw-bold mb-1 d-block">SECONDARY_IP (BAND_B)</label>
+                       <input type="text" className="hud-input w-100" value={tempCfg.ipB} onChange={e=>setTempCfg({...tempCfg, ipB: e.target.value})} />
+                    </div>
+                    <div className="col-8">
+                       <label className="text-white-50 small fw-bold mb-1 d-block">AUTH_USER</label>
+                       <input type="text" className="hud-input w-100" value={tempCfg.user} onChange={e=>setTempCfg({...tempCfg, user: e.target.value})} />
+                    </div>
+                    <div className="col-4">
+                       <label className="text-white-50 small fw-bold mb-1 d-block">SSH_PORT</label>
+                       <input type="number" className="hud-input w-100" value={tempCfg.sshPort} onChange={e=>setTempCfg({...tempCfg, sshPort: e.target.value})} />
+                    </div>
+                    <div className="col-12">
+                       <label className="text-white-50 small fw-bold mb-1 d-block">AUTH_PASS</label>
+                       <input type="password" className="hud-input w-100" value={tempCfg.pass} onChange={e=>setTempCfg({...tempCfg, pass: e.target.value})} />
+                    </div>
+                    <div className="col-6">
+                       <label className="text-white-50 small fw-bold mb-1 d-block">PROXY_IP</label>
+                       <input type="text" className="hud-input w-100" value={tempCfg.proxy} onChange={e=>setTempCfg({...tempCfg, proxy: e.target.value})} />
+                    </div>
+                    <div className="col-6">
+                       <label className="text-white-50 small fw-bold mb-1 d-block">CALLSIGN</label>
+                       <input type="text" className="hud-input w-100" value={tempCfg.callsign} onChange={e=>setTempCfg({...tempCfg, callsign: e.target.value})} />
+                    </div>
+                 </div>
+                 <button className="btn btn-tactical w-100 mt-4 bg-orange text-black border-0 py-3" onClick={() => {
+                    localStorage.setItem('tak_bootstrap_v13_cfg', JSON.stringify(tempCfg));
+                    setConfig(tempCfg); setIsConfigOpen(false); window.location.reload();
+                 }}>COMMIT_MISSION_CONFIG</button>
+                 {config && <button className="btn btn-link text-danger small w-100 mt-2" onClick={()=>{if(confirm('ERASE_ALL?')){localStorage.removeItem('tak_bootstrap_v13_cfg'); window.location.reload();}}}>FACTORY_RESET</button>}
               </div>
-
-              <div className="config-section">
-                <div className="section-label">TAK SERVER PARAMETERS</div>
-                <div className="grid-2">
-                  <div className="input-group">
-                    <label>API PORT</label>
-                    <input type="text" value={config.apiPort} onChange={e => setConfig({...config, apiPort: e.target.value})} />
-                  </div>
-                  <div className="input-group">
-                    <label>SSH PORT</label>
-                    <input type="text" value={config.sshPort} onChange={e => setConfig({...config, sshPort: e.target.value})} />
-                  </div>
-                </div>
-                <div className="input-group">
-                  <label>FTS MASTER API KEY</label>
-                  <input type="password" value={config.apiKey} onChange={e => setConfig({...config, apiKey: e.target.value})} />
-                </div>
-              </div>
-
-              <div className="config-section">
-                <div className="section-label">OPERATIONAL PARAMETERS</div>
-                <div className="input-group">
-                  <label>HQ CALLSIGN</label>
-                  <input type="text" value={config.callsign} onChange={e => setConfig({...config, callsign: e.target.value})} />
-                </div>
-              </div>
-
-              <button className="save-btn" onClick={() => {
-                localStorage.setItem('tak_c2_v3_config', JSON.stringify(config));
-                setShowConfig(false);
-              }}>
-                <Save size={18} /> APPLY COMMAND PARAMETERS
-              </button>
-            </div>
-          </motion.div>
-        )}
+           </motion.div>
+         )}
       </AnimatePresence>
+
     </div>
   );
 };
