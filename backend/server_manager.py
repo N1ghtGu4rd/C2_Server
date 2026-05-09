@@ -10,17 +10,22 @@ import xml.sax.saxutils as saxutils
 import re
 import unicodedata
 import html
+import uuid
+import logging
 from pydantic import BaseModel
 from typing import List, Optional
 
-app = FastAPI(title="TAK_C2_BRIDGE_V23_ULTIMATE_CLEAN")
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("TAK-C2")
+
+app = FastAPI(title="TAK_C2_BRIDGE_V37_P2P_FINAL")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*"]
 )
 
 class MissionPayload(BaseModel):
@@ -34,30 +39,17 @@ class MissionPayload(BaseModel):
 UNITS_VAULT = {}
 UNITS_LOCK = threading.Lock()
 COMMS_VAULT = []
-LISTENER_STARTED = False
 SHARED_SOCKET = None
 SOCKET_LOCK = threading.Lock()
 TARGET_HOST = ""
-RAW_DEBUG_DATA = "" # Para ver qué llega de TAKy
+MISSION_ACTIVE = threading.Event()
+MY_SERIAL_UID = "9876543210abc"
 
 def universal_clean(text):
-    """Limpia CUALQUIER rastro de codificación HTML o caracteres raros"""
     if not text: return ""
     try:
-        # Decodificar recursivamente (hasta 3 niveles)
-        res = text
-        for _ in range(3):
-            res = html.unescape(res)
-        
-        # Eliminar cualquier residuo de entidades HTML mal formadas
-        res = re.sub(r'&#?\w+;', '', res)
-        res = re.sub(r'&amp;', '&', res)
-        
-        # Arreglar fallos comunes de UTF-8/Latin-1
-        rep = {
-            "Ão": "ío", "Ã­": "í", "Ã¡": "á", "Ã©": "é", "Ã³": "ó", "Ãº": "ú", "Ã±": "ñ",
-            "\xad": "í", "Del BrÃo": "Del Brío", "BrÃo": "Brío"
-        }
+        res = html.unescape(html.unescape(text))
+        rep = {"Ão": "ío", "Ã­": "í", "Ã¡": "á", "Ã©": "é", "Ã³": "ó", "Ãº": "ú", "Ã±": "ñ"}
         for k, v in rep.items(): res = res.replace(k, v)
         return res.strip()
     except: return text
@@ -68,79 +60,126 @@ def clean_uid(text):
     clean = "".join(c for c in unicodedata.normalize('NFD', clean) if unicodedata.category(c) != 'Mn')
     return re.sub(r'[^a-zA-Z0-9_]', '', clean)
 
-def cot_worker(host, callsign):
-    global SHARED_SOCKET, UNITS_VAULT, COMMS_VAULT, TARGET_HOST, RAW_DEBUG_DATA
+def safe_float(v, default=0.0):
+    try:
+        if v is None or str(v).lower() == "undefined" or str(v).strip() == "": return default
+        return float(str(v).replace(',', '.'))
+    except: return default
+
+def send_raw_cot(xml_content):
+    try:
+        with SOCKET_LOCK:
+            if SHARED_SOCKET:
+                packet = xml_content.strip() + "\0"
+                SHARED_SOCKET.sendall(packet.encode('utf-8'))
+                return True
+    except:
+        with SOCKET_LOCK: SHARED_SOCKET = None
+    return False
+
+def send_chat_packet(sender, text, lat, lng, target_uid="BROADCAST"):
+    ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    stale = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 600))
+    msg_guid = str(uuid.uuid4())
+    
+    # Si es broadcast, usamos All Chat. Si no, el UID del destinatario.
+    conv_id = "All Chat" if target_uid == "BROADCAST" else target_uid
+    msg_id = f"GeoChat.{MY_SERIAL_UID}.{conv_id.replace(' ', '_')}.{msg_guid}"
+    
+    xml = (f'<event version="2.0" uid="{msg_id}" type="b-t-f" time="{ts}" start="{ts}" stale="{stale}" how="m-g">'
+           f'<point lat="{lat}" lon="{lng}" hae="0.0" ce="9.9" le="9.9"/>'
+           f'<detail>'
+           f'<__chat parent="ALL" group="NONE" senderCallsign="{sender}" messageId="{msg_guid}" conversationId="{conv_id}">'
+           f'<content>{saxutils.escape(text)}</content></__chat>'
+           f'<link uid="{MY_SERIAL_UID}" type="a-f-G-U-C" relation="p-p"/>'
+           f'<contact callsign="{sender}"/>'
+           f'<remarks>{saxutils.escape(text)}</remarks></detail></event>')
+    send_raw_cot(xml)
+
+def cot_worker(host):
+    global SHARED_SOCKET, TARGET_HOST
     TARGET_HOST = host
-    while True:
+    buffer = ""
+    while MISSION_ACTIVE.is_set():
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(20)
+            s.settimeout(5.0)
             s.connect((host, 8087))
             with SOCKET_LOCK: SHARED_SOCKET = s
-            while True:
-                raw_data = s.recv(10240)
-                if not raw_data: break
-                RAW_DEBUG_DATA = raw_data.decode('latin-1', errors='ignore')[:500]
-                try: data = raw_data.decode('utf-8')
-                except: data = raw_data.decode('latin-1', errors='replace')
-                
-                if '<event' in data:
-                    try:
-                        if 'callsign="' in data:
-                            cs_raw = data.split('callsign="')[1].split('"')[0]
-                            cs = universal_clean(cs_raw)
-                            uid = data.split(' uid="')[1].split('"')[0]
-                            lat = data.split('lat="')[1].split('"')[0]
-                            lon = data.split('lon="')[1].split('"')[0]
-                            with UNITS_LOCK:
-                                UNITS_VAULT[cs] = {"callsign": cs, "uid": uid, "lat": float(lat), "lng": float(lon), "status": "ONLINE", "last_seen": time.time()}
-                        
-                        if '<remarks>' in data and 'senderCallsign="' in data:
-                            msg_text = universal_clean(data.split('<remarks>')[1].split('</remarks>')[0])
-                            sender = universal_clean(data.split('senderCallsign="')[1].split('"')[0])
-                            COMMS_VAULT.append({"sender": sender, "text": msg_text, "time": time.strftime("%H:%M:%S")})
-                    except: pass
+            logger.info("LINK_UP")
+            
+            while MISSION_ACTIVE.is_set():
+                try:
+                    raw = s.recv(10240)
+                    if not raw: break
+                    chunk = raw.decode('utf-8', errors='replace')
+                    buffer += chunk
+                    while "</event>" in buffer:
+                        event_end = buffer.find("</event>") + 8
+                        data = buffer[:event_end]
+                        buffer = buffer[event_end:]
+                        try:
+                            if 'callsign="' in data:
+                                cs = universal_clean(data.split('callsign="')[1].split('"')[0])
+                                uid = data.split(' uid="')[1].split('"')[0]
+                                lat = data.split('lat="')[1].split('"')[0]
+                                lon = data.split('lon="')[1].split('"')[0]
+                                with UNITS_LOCK:
+                                    UNITS_VAULT[cs] = {"callsign": cs, "uid": uid, "lat": safe_float(lat), "lng": safe_float(lon), "last_seen": time.time()}
+                            if '<__chat' in data or '<remarks>' in data:
+                                msg_text = ""
+                                if '<remarks>' in data: msg_text = universal_clean(data.split('<remarks>')[1].split('</remarks>')[0])
+                                elif '<content>' in data: msg_text = universal_clean(data.split('<content>')[1].split('</content>')[0])
+                                sender = "UNKNOWN"
+                                if 'senderCallsign="' in data: sender = universal_clean(data.split('senderCallsign="')[1].split('"')[0])
+                                if msg_text and sender != "UNKNOWN":
+                                    COMMS_VAULT.append({"sender": sender, "text": msg_text, "time": time.strftime("%H:%M:%S")})
+                        except: pass
+                except socket.timeout: continue
+                except: break
         except:
             with SOCKET_LOCK: SHARED_SOCKET = None
             time.sleep(5)
 
-def send_cot_persistent(xml_content):
-    global SHARED_SOCKET, TARGET_HOST
-    try:
-        with SOCKET_LOCK:
-            if not SHARED_SOCKET:
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.settimeout(5)
-                s.connect((TARGET_HOST, 8087))
-                SHARED_SOCKET = s
-            SHARED_SOCKET.sendall((xml_content.strip() + "\n").encode('utf-8'))
-            return True
-    except:
-        with SOCKET_LOCK: SHARED_SOCKET = None
-        return False
-
 def presence_beacon(host, callsign, lat, lng):
-    while True:
+    while MISSION_ACTIVE.is_set():
         ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         stale = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 300))
         pretty_cs = universal_clean(callsign)
-        uid = f"C2_{clean_uid(pretty_cs)}"
-        xml = (f'<event version="2.0" uid="{uid}" type="a-f-G-U-C-I" time="{ts}" start="{ts}" stale="{stale}" how="h-g-i-g-o">'
+        xml = (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+               f'<event version="2.0" uid="{MY_SERIAL_UID}" type="a-f-G-U-C" time="{ts}" start="{ts}" stale="{stale}" how="m-g">'
                f'<point lat="{lat}" lon="{lng}" hae="0.0" ce="999" le="999"/>'
-               f'<detail><contact callsign="{pretty_cs}"/><__group role="Team" name="Cyan"/><remarks>C2_ACTIVE</remarks></detail></event>')
-        send_cot_persistent(xml)
+               f'<detail>'
+               f'<contact callsign="{pretty_cs}" phone="{pretty_cs}"/>'
+               f'<__group role="Team" name="Cyan"/>'
+               f'<status battery="100"/>'
+               f'<takv os="android" version="4.8.1" platform="TAB"/>'
+               f'<__chat chatgrp_id="All Chat"/>'
+               f'<remarks>C2_ACTIVE</remarks>'
+               f'</detail></event>')
+        send_raw_cot(xml)
         time.sleep(30)
 
+@app.get("/api/v1/control/{action}")
+async def mission_control(action: str, host: str = None, callsign: str = "HQ", lat: str = "40", lng: str = "0"):
+    global MISSION_ACTIVE
+    if action == "start":
+        if not MISSION_ACTIVE.is_set():
+            MISSION_ACTIVE.set()
+            threading.Thread(target=cot_worker, args=(host,), daemon=True).start()
+            threading.Thread(target=presence_beacon, args=(host, callsign, safe_float(lat), safe_float(lng)), daemon=True).start()
+        return {"status": "MISSION_DEPLOYED"}
+    else:
+        MISSION_ACTIVE.clear()
+        with SOCKET_LOCK:
+            if SHARED_SOCKET: SHARED_SOCKET.close(); SHARED_SOCKET = None
+        return {"status": "MISSION_STANDBY"}
+
 @app.get("/api/v1/units")
-async def get_units(host: str = "127.0.0.1", callsign: str = "HQ", lat: str = "40.4168", lng: str = "-3.7038"):
-    global LISTENER_STARTED
-    if not LISTENER_STARTED and host != "127.0.0.1":
-        threading.Thread(target=cot_worker, args=(host, callsign), name="COT_WORKER", daemon=True).start()
-        threading.Thread(target=presence_beacon, args=(host, callsign, lat, lng), name="BEACON", daemon=True).start()
-        LISTENER_STARTED = True
+async def get_units():
     now = time.time()
     with UNITS_LOCK:
-        active = [u for u in list(UNITS_VAULT.values()) if now - u['last_seen'] < 60]
+        active = [u for u in list(UNITS_VAULT.values()) if now - u['last_seen'] < 120]
     return active
 
 @app.get("/api/v1/comms")
@@ -148,27 +187,15 @@ async def get_comms(): return COMMS_VAULT
 
 @app.post("/api/v1/comms")
 async def send_comm(msg: dict):
-    ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    stale = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 600))
     sender = universal_clean(msg.get('sender', 'OP'))
-    text = saxutils.escape(msg.get('text', ''))
-    lat = msg.get('lat', '0.0')
-    lng = msg.get('lng', '0.0')
-    my_uid = f"C2_{clean_uid(sender)}"
-    msg_id = f"GeoChat.{my_uid}.All_Chat.{int(time.time())}"
-    
-    xml = (f'<event version="2.0" uid="{msg_id}" type="b-t-f" time="{ts}" start="{ts}" stale="{stale}" how="h-g-i-g-o">'
-           f'<point lat="{lat}" lon="{lng}" hae="0.0" ce="9.9" le="9.9"/>'
-           f'<detail><__chat parent="ALL" group="NONE" senderCallsign="{sender}" messageId="{msg_id}" conversationId="All Chat">'
-           f'<content>{text}</content></__chat><remarks>{text}</remarks><contact callsign="{sender}"/></detail></event>')
-    
-    if send_cot_persistent(xml):
-        COMMS_VAULT.append(msg)
-        return {"status": "success"}
-    return {"status": "error"}
-
-@app.get("/api/v1/debug")
-async def get_debug(): return {"raw": RAW_DEBUG_DATA}
+    text = msg.get('text', '')
+    target = msg.get('target', 'BROADCAST')
+    lat = safe_float(msg.get('lat'), 40)
+    lng = safe_float(msg.get('lng'), -3)
+    logger.info(f"TX_CHAT TO {target}: {text}")
+    send_chat_packet(sender, text, lat, lng, target)
+    COMMS_VAULT.append(msg)
+    return {"status": "success"}
 
 @app.post("/api/v1/terminal")
 async def run_terminal(p: MissionPayload):
@@ -177,14 +204,12 @@ async def run_terminal(p: MissionPayload):
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         ssh.connect(p.host, port=p.port, username=p.user, password=p.password, timeout=10)
         _, out, err = ssh.exec_command(p.command)
-        response = out.read().decode() + err.read().decode()
-        ssh.close()
-        return {"status": "success", "output": response or "Command executed"}
+        return {"status": "success", "output": out.read().decode() + err.read().decode()}
     except Exception as e: return {"status": "error", "output": str(e)}
 
 @app.post("/api/v1/telemetry")
 async def get_telemetry(p: MissionPayload):
-    res = {"cpu": 0, "ram": {"perc": 0}, "disk": "N/A", "temp": "0", "fts": False}
+    res = {"cpu": 0, "ram": {"perc": 0}, "disk": "N/A", "fts": False}
     try:
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -192,6 +217,6 @@ async def get_telemetry(p: MissionPayload):
         _, out, _ = ssh.exec_command("top -bn1 | grep 'Cpu(s)' | awk '{print $2+$4}'; free -m | grep Mem: | awk '{print $3*100/$2}'; df -h / | tail -1 | awk '{print $5}'; ss -tuln | grep :8087 | wc -l")
         lines = [l.strip() for l in out.read().decode().split('\n') if l.strip()]
         ssh.close()
-        res.update({"cpu": parse_num(lines[0]), "ram": {"perc": parse_num(lines[1])}, "disk": lines[2], "fts": parse_num(lines[3]) > 0})
+        res.update({"cpu": safe_float(lines[0]), "ram": {"perc": safe_float(lines[1])}, "disk": lines[2], "fts": safe_float(lines[3]) > 0})
         return {"status": "success", **res}
     except: return {"status": "partial", **res}
