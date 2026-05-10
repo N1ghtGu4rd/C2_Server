@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@awesome-cordova-plugins/network-interface": "^9.1.4",
+    "@capacitor/android": "^8.3.3",
     "capacitor-udp": "^0.2.0",
     "framer-motion": "^10.16.4",
     "lucide-react": "^0.284.0",
