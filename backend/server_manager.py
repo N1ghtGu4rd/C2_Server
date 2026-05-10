@@ -19,7 +19,7 @@ from typing import List, Optional
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("TAK-C2")
 
-app = FastAPI(title="TAK_C2_BRIDGE_V4.6_DROID_SYNC")
+app = FastAPI(title="TAK_C2_PREMIUM_FINAL_v4.1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -46,6 +46,18 @@ TARGET_HOST = ""
 MISSION_ACTIVE = threading.Event()
 MY_REAL_UID = "ANDROID-C2-BRIDGE"
 
+MCAST_GRP = '224.10.10.1'
+MCAST_PORT = 17012
+
+def get_local_ip():
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except: return "0.0.0.0"
+
 def universal_clean(text):
     if not text: return ""
     try:
@@ -67,6 +79,7 @@ def get_tak_timestamp(offset=0):
 
 def send_raw_cot(xml_content):
     global SHARED_SOCKET
+    # TCP
     try:
         with SOCKET_LOCK:
             if SHARED_SOCKET:
@@ -74,6 +87,13 @@ def send_raw_cot(xml_content):
                 SHARED_SOCKET.sendall(packet.encode('utf-8'))
     except:
         with SOCKET_LOCK: SHARED_SOCKET = None
+    # Multicast
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
+        sock.sendto(xml_content.encode('utf-8'), (MCAST_GRP, MCAST_PORT))
+        sock.close()
+    except: pass
 
 def send_chat_packet(sender, text, lat, lng, target_uid="BROADCAST"):
     ts = get_tak_timestamp()
@@ -81,25 +101,67 @@ def send_chat_packet(sender, text, lat, lng, target_uid="BROADCAST"):
     msg_guid = str(uuid.uuid4())
     conv_id = "All Chat" if target_uid == "BROADCAST" else target_uid
     
-    # 1. Mensaje Moderno (b-t-f)
-    msg_id_1 = f"GeoChat.{MY_REAL_UID}.{conv_id.replace(' ', '_')}.{msg_guid}"
-    xml_1 = (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-             f'<event version="2.0" uid="{msg_id_1}" type="b-t-f" time="{ts}" start="{ts}" stale="{stale}" how="h-g-i-g-o">'
-             f'<point lat="{lat}" lon="{lng}" hae="0.0" ce="9.9" le="9.9"/>'
-             f'<detail>'
-             f'<__chat parent="Root" group="NONE" senderCallsign="{sender}" messageId="{msg_guid}" conversationId="{conv_id}">'
-             f'<content>{saxutils.escape(text)}</content></__chat>'
-             f'<link uid="{MY_REAL_UID}" type="a-f-G-U-C" relation="p-p"/>'
-             f'<contact endpoint="*:-1:stcp" callsign="{sender}"/>'
-             f'<remarks>{saxutils.escape(text)}</remarks></detail></event>')
-    send_raw_cot(xml_1)
-    
-    # 2. Mensaje Legado (t-x-c-t)
-    xml_2 = (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-             f'<event version="2.0" uid="{msg_guid}" type="t-x-c-t" time="{ts}" start="{ts}" stale="{stale}" how="h-e">'
-             f'<point lat="{lat}" lon="{lng}" hae="0.0" ce="9.9" le="9.9"/>'
-             f'<detail><remarks>{saxutils.escape(text)}</remarks></detail></event>')
-    send_raw_cot(xml_2)
+    xml = (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+           f'<event version="2.0" uid="GeoChat.{MY_REAL_UID}.{conv_id.replace(" ", "_")}.{msg_guid}" type="b-t-f" time="{ts}" start="{ts}" stale="{stale}" how="h-e">'
+           f'<point lat="{lat}" lon="{lng}" hae="0.0" ce="9.9" le="9.9"/>'
+           f'<detail>'
+           f'<__chat parent="Root" group="NONE" senderCallsign="{sender}" messageId="{msg_guid}" conversationId="{conv_id}">'
+           f'<content>{saxutils.escape(text)}</content></__chat>'
+           f'<link uid="{MY_REAL_UID}" type="a-f-G-U-C-I" relation="p-p"/>'
+           f'<contact endpoint="*:-1:stcp" callsign="{sender}"/>'
+           f'<uid nett="XX" Droid="{sender}"/>'
+           f'<remarks>{saxutils.escape(text)}</remarks></detail></event>')
+    send_raw_cot(xml)
+
+def process_incoming_xml(data, source_tag):
+    try:
+        if 'callsign="' in data:
+            cs = universal_clean(data.split('callsign="')[1].split('"')[0])
+            uid = data.split(' uid="')[1].split('"')[0]
+            lat = data.split('lat="')[1].split('"')[0]
+            lon = data.split('lon="')[1].split('"')[0]
+            with UNITS_LOCK:
+                UNITS_VAULT[cs] = {"callsign": cs, "uid": uid, "lat": safe_float(lat), "lng": safe_float(lon), "last_seen": time.time()}
+        
+        if '<__chat' in data or '<remarks>' in data or 'type="b-t-f"' in data:
+            msg_text = ""
+            if '<remarks>' in data: msg_text = universal_clean(data.split('<remarks>')[1].split('</remarks>')[0])
+            elif '<content>' in data: msg_text = universal_clean(data.split('<content>')[1].split('</content>')[0])
+            sender = "UNKNOWN"
+            if 'senderCallsign="' in data: sender = universal_clean(data.split('senderCallsign="')[1].split('"')[0])
+            elif 'callsign="' in data: sender = universal_clean(data.split('callsign="')[1].split('"')[0])
+            
+            if msg_text and sender != "UNKNOWN" and MY_REAL_UID not in data:
+                if "C2_ACTIVE" in msg_text: return
+                COMMS_VAULT.append({"sender": sender, "text": msg_text, "time": time.strftime("%H:%M:%S"), "target": source_tag})
+    except: pass
+
+def multicast_listener():
+    local_ip = get_local_ip()
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(('', MCAST_PORT))
+        mreq = socket.inet_aton(MCAST_GRP) + socket.inet_aton(local_ip)
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+        while MISSION_ACTIVE.is_set():
+            try:
+                raw, _ = sock.recvfrom(20480)
+                process_incoming_xml(raw.decode('utf-8', errors='replace'), "BROADCAST")
+            except: pass
+    except: pass
+
+def udp_broadcast_listener():
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(('', 4242))
+        while MISSION_ACTIVE.is_set():
+            try:
+                raw, _ = sock.recvfrom(20480)
+                process_incoming_xml(raw.decode('utf-8', errors='replace'), "BROADCAST")
+            except: pass
+    except: pass
 
 def cot_listener(host, port):
     global SHARED_SOCKET, TARGET_HOST
@@ -115,35 +177,11 @@ def cot_listener(host, port):
                 try:
                     raw = s.recv(10240)
                     if not raw: break
-                    chunk = raw.decode('utf-8', errors='replace')
-                    buffer += chunk
+                    buffer += raw.decode('utf-8', errors='replace')
                     while "</event>" in buffer:
-                        event_end = buffer.find("</event>") + 8
-                        data = buffer[:event_end]
-                        buffer = buffer[event_end:]
-                        try:
-                            if 'callsign="' in data:
-                                cs = universal_clean(data.split('callsign="')[1].split('"')[0])
-                                uid = data.split(' uid="')[1].split('"')[0]
-                                lat = data.split('lat="')[1].split('"')[0]
-                                lon = data.split('lon="')[1].split('"')[0]
-                                with UNITS_LOCK:
-                                    UNITS_VAULT[cs] = {"callsign": cs, "uid": uid, "lat": safe_float(lat), "lng": safe_float(lon), "last_seen": time.time()}
-                            
-                            # Captura selectiva de mensajes de chat
-                            if '<__chat' in data or '<remarks>' in data:
-                                msg_text = ""
-                                if '<remarks>' in data: msg_text = universal_clean(data.split('<remarks>')[1].split('</remarks>')[0])
-                                elif '<content>' in data: msg_text = universal_clean(data.split('<content>')[1].split('</content>')[0])
-                                sender = "UNKNOWN"
-                                if 'senderCallsign="' in data: sender = universal_clean(data.split('senderCallsign="')[1].split('"')[0])
-                                elif 'callsign="' in data: sender = universal_clean(data.split('callsign="')[1].split('"')[0])
-                                
-                                if msg_text and sender != "UNKNOWN" and MY_REAL_UID not in data:
-                                    logger.info(f"[CHAT_IN] {sender}: {msg_text}")
-                                    COMMS_VAULT.append({"sender": sender, "text": msg_text, "time": time.strftime("%H:%M:%S")})
-                        except: pass
-                except socket.timeout: continue
+                        idx = buffer.find("</event>") + 8
+                        process_incoming_xml(buffer[:idx], "BROADCAST")
+                        buffer = buffer[idx:]
                 except: break
         except:
             if port == 8087:
@@ -155,9 +193,8 @@ def presence_beacon(host, callsign, lat, lng):
         ts = get_tak_timestamp()
         stale = get_tak_timestamp(300)
         pretty_cs = universal_clean(callsign)
-        # Identidad Droid completa
         xml = (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-               f'<event version="2.0" uid="{MY_REAL_UID}" type="a-f-G-U-C" time="{ts}" start="{ts}" stale="{stale}" how="m-g">'
+               f'<event version="2.0" uid="{MY_REAL_UID}" type="a-f-G-U-C-I" time="{ts}" start="{ts}" stale="{stale}" how="m-g">'
                f'<point lat="{lat}" lon="{lng}" hae="0.0" ce="999" le="999"/>'
                f'<detail>'
                f'<contact endpoint="*:-1:stcp" callsign="{pretty_cs}"/>'
@@ -180,7 +217,8 @@ async def mission_control(action: str, host: str = None, callsign: str = "HQ", l
             MISSION_ACTIVE.set()
             threading.Thread(target=cot_listener, args=(host, 8087), daemon=True).start()
             threading.Thread(target=cot_listener, args=(host, 8088), daemon=True).start()
-            threading.Thread(target=cot_listener, args=(host, 8089), daemon=True).start()
+            threading.Thread(target=multicast_listener, daemon=True).start()
+            threading.Thread(target=udp_broadcast_listener, daemon=True).start()
             threading.Thread(target=presence_beacon, args=(host, callsign, safe_float(lat, 40.41), safe_float(lng, -3.70)), daemon=True).start()
         return {"status": "MISSION_DEPLOYED"}
     else:
