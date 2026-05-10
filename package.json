@@ -9,6 +9,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@awesome-cordova-plugins/network-interface": "^9.1.4",
+    "capacitor-udp": "^0.2.0",
     "framer-motion": "^10.16.4",
     "lucide-react": "^0.284.0",
     "react": "^18.2.0",
