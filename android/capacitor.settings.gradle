@@ -2,5 +2,14 @@
 include ':capacitor-android'
 project(':capacitor-android').projectDir = new File('../node_modules/@capacitor/android/capacitor')
 
+include ':capacitor-geolocation'
+project(':capacitor-geolocation').projectDir = new File('../node_modules/@capacitor/geolocation/android')
+
+include ':capacitor-ssh-plugin'
+project(':capacitor-ssh-plugin').projectDir = new File('../node_modules/capacitor-ssh-plugin/android')
+
+include ':capacitor-tcp-socket'
+project(':capacitor-tcp-socket').projectDir = new File('../node_modules/capacitor-tcp-socket/android')
+
 include ':capacitor-udp'
 project(':capacitor-udp').projectDir = new File('../node_modules/capacitor-udp/android')
