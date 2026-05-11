@@ -1,77 +1,84 @@
-# ⚡ TAK Command & Control (C2) Dashboard
+# <p align="center">TAK C2 - TACTICAL COMMAND DASHBOARD</p>
 
-![Elite Tactical Dashboard](https://img.shields.io/badge/Status-Operational-00ffcc?style=for-the-badge&logo=target)
-![Milspec Standard](https://img.shields.io/badge/Design-Modern_Milspec-4b5320?style=for-the-badge)
-![Encryption](https://img.shields.io/badge/Security-AES--256--GCM-blue?style=for-the-badge)
+<p align="center">
+  <img src="public/assets/logo.png" alt="TAK C2 Logo" width="200" style="border-radius: 20px; box-shadow: 0 4px 15px rgba(0,255,65,0.3);">
+</p>
 
-**TAK C2 Command Center** is a high-performance, professional management interface designed for controlling TAK servers and coordinating field units (ATAK, WinTAK, ITAK). It provides a centralized "Commander's View" of server health, tactical unit status, and remote operational controls.
-
----
-
-## 🛠 Strategic Features
-
-### 🖥️ Mission Dashboard
-- **Real-Time Telemetry**: Monitor CPU load, RAM allocation, and network latency with high-precision instruments.
-- **Situational Awareness**: Integrated geospatial map overlay for tracking field operative positions and mission markers.
-- **Unit Management**: View active TAK units, connection types (LAN/WAN), and individual telemetry.
-
-### 🔐 Advanced Operational Security
-- **Dual IP Profile**: Instant switching between Primary (LAN) and Secondary (ZeroTier/WAN) network interfaces.
-- **Secure Tunneling**: Native support for SSH management and API-encrypted communication.
-- **Stealth Mode**: Low-luminance UI filter for night operations and light discipline.
-- **NVG Optimization**: Full red-spectrum Night Vision mode to preserve operator optics.
-
-### 🕹️ Remote Command Suite
-- **Service Control**: Restart FreeTAKServer (FTS) services remotely.
-- **Power Management**: Authorized remote shutdown and reboot sequences.
-- **Log Console**: Real-time access to kernel logs for immediate troubleshooting.
+<p align="center">
+  <img src="https://img.shields.io/badge/STATUS-OPERATIONAL-00FF41?style=for-the-badge&logo=android&logoColor=white" alt="Status">
+  <img src="https://img.shields.io/badge/VERSION-8.0_STANDALONE-orange?style=for-the-badge" alt="Version">
+  <img src="https://img.shields.io/badge/SECURITY-ENCRYPTED-red?style=for-the-badge" alt="Security">
+</p>
 
 ---
 
-## 🚀 Deployment & Setup
+## ⚡ MISSION OVERVIEW
 
-### Requirements
-- **Node.js** (LTS)
-- **Capacitor CLI** (for mobile export)
-- **FreeTAKServer** (Compatible with v1.9+)
+**TAK C2** is a professional-grade, autonomous tactical bridge designed for field operators. Unlike standard dashboards, this application is **100% standalone**, meaning it connects directly from your mobile device to any TAK-compliant server (FreeTAKServer, ATAK-Server, etc.) without requiring a middleman computer.
 
-### Installation
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/N1ghtGu4rd/C2_Server.git
-   cd C2_Server
-   ```
+### 🛠 CORE CAPABILITIES
 
-2. **Install dependencies:**
-   ```bash
-   npm install
-   ```
-
-3. **Launch in Dev Mode:**
-   ```bash
-   npm run dev
-   ```
-
-### 📱 Android APK Compilation
-To generate the tactical mobile application:
-1. Build the web assets: `npm run build`
-2. Sync with Capacitor: `npx cap copy`
-3. Open in Android Studio: `npx cap open android`
-4. Build > Build Bundle(s) / APK(s) > Build APK(s)
+*   **Standalone Architecture**: Direct SSH & TCP integration. No bridge server required.
+*   **Real-Time Telemetry**: Monitor server CPU, RAM, and Disk health via encrypted SSH.
+*   **Tactical HUD**: Leaflet-based map with high-accuracy GPS tracking using native Android sensors.
+*   **CoT Streaming**: Full support for Cursor-on-Target (CoT) XML packets (Ports 8087/8088).
+*   **Mesh Ready**: Integrated UDP Multicast listener for peer-to-peer tactical awareness.
+*   **Milspec UI**: Ultra-high contrast interface optimized for low-light and high-stress environments.
 
 ---
 
-## 📡 Configuration Parameters
+## 🚀 DEPLOYMENT GUIDE
 
-Access the **Commander Configuration** panel (Gear Icon) to define operational parameters:
-- **Primary IP**: Local network address of the TAK Server.
-- **Secondary IP**: ZeroTier or public WAN address.
-- **API/SSH Ports**: Customize based on your server hardening.
-- **Master API Key**: Required for administrative commands.
+### 1. Prerequisites
+*   **Node.js & NPM**: For frontend building.
+*   **Android SDK**: With `compileSdkVersion 36`.
+*   **JDK 21**: Required for modern Kotlin/Gradle compilation.
+
+### 2. Build Pipeline
+To generate the tactical package (APK), run the following mission-critical commands:
+
+```bash
+# 1. Build frontend assets
+npm run build
+
+# 2. Synchronize with Android native layer
+npx cap sync android
+
+# 3. Compile tactical APK
+cd android
+.\gradlew.bat clean
+.\gradlew.bat assembleDebug
+```
+
+### 3. Field Configuration
+Once the APK is installed on your mobile device:
+1.  Open the **TAK_C2** application.
+2.  Tap the **Gear Icon** (Settings).
+3.  Enter the **TAK_SERVER_IP** (Band A/B for dual-network support).
+4.  Configure **SSH Credentials** for real-time telemetry.
+5.  Set your **Callsign** and tap **SAVE & ACTIVATE**.
 
 ---
 
-## ⚖️ Legal & Security
-*This software is designed for professional tactical communication and situational awareness. Ensure all deployments comply with local encryption and network security regulations.*
+## 🛡 ARCHITECTURE SPECS
 
-**Developed for elite operators. Command with precision.**
+| Component | Technology | Role |
+| --- | --- | --- |
+| **Core** | React 18 + Vite | High-performance UI logic |
+| **Native Bridge** | Capacitor 8.0 | Hardware access & OS integration |
+| **Networking** | capacitor-tcp-socket | Direct TAK Server CoT streaming |
+| **Security** | capacitor-ssh-plugin | Encrypted server management |
+| **Mapping** | Leaflet + ArcGIS | Tactical geospatial visualization |
+
+---
+
+## ⚠️ OPERATIONAL DISCLAIMER
+
+This software is designed for tactical situational awareness. Ensure that your TAK Server firewall is configured to allow incoming connections on ports **8087 (TCP)**, **8088 (TCP)**, and **22 (SSH)**. Always verify network accessibility before field deployment.
+
+---
+
+<p align="center">
+  <i>"Precision in Data. Dominance in the Field."</i><br>
+  <b>TAK_C2 Tactical Systems v8.0</b>
+</p>

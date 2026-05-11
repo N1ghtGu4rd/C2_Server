@@ -7,6 +7,9 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Capacitor } from '@capacitor/core';
+import { Geolocation } from '@capacitor/geolocation';
+import { SSH } from 'capacitor-ssh-plugin';
+import { TcpSocket, DataEncoding } from 'capacitor-tcp-socket';
 
 const isNative = Capacitor.getPlatform() !== 'web';
 
@@ -18,13 +21,6 @@ if (isNative) {
 
 const MADRID_DEFAULT = { lat: 40.4168, lng: -3.7038 };
 
-const decodeHTMLEntities = (text) => {
-  if (!text) return "";
-  const textArea = document.createElement('textarea');
-  textArea.innerHTML = text;
-  return textArea.value;
-};
-
 const App = () => {
   const [config, setConfig] = useState(() => {
     const saved = localStorage.getItem('tak_bootstrap_v13_cfg');
@@ -32,7 +28,7 @@ const App = () => {
   });
 
   const [tempCfg, setTempCfg] = useState(config || {
-    ipA: '', ipB: '', user: 'server-tak', pass: 'C3rv3rus', proxy: window.location.hostname, callsign: 'HQ-OPERATOR', sshPort: '22', lat: '40.4168', lng: '-3.7038'
+    ipA: '', ipB: '', user: 'server-tak', pass: 'C3rv3rus', proxy: '', callsign: 'HQ-OPERATOR', sshPort: '22', lat: '40.4168', lng: '-3.7038'
   });
 
   const [isConfigOpen, setIsConfigOpen] = useState(!config);
@@ -43,13 +39,42 @@ const App = () => {
   const [units, setUnits] = useState([]);
   const [messages, setMessages] = useState([]);
   const [stats, setStats] = useState({ cpu: 0, ram: 0, disk: '0%', status: 'STANDBY' });
-  const [termLines, setTermLines] = useState(['-- TACTICAL_C2_v7.4_FULL_CONFIG --']);
+  const [termLines, setTermLines] = useState(['-- TACTICAL_C2_v8.0_STANDALONE --']);
   const [termInput, setTermInput] = useState('');
   const [userInput, setUserInput] = useState('');
   const [chatTarget, setChatTarget] = useState({ callsign: 'BROADCAST', uid: 'BROADCAST' });
   const [zuluTime, setZuluTime] = useState('--:--:--Z');
   const [isMobile, setIsMobile] = useState(window.innerWidth < 992);
+  const [tcpClientId, setTcpClientId] = useState(null);
 
+  // --- GEOLOCATION FIX ---
+  useEffect(() => {
+    let watchId = null;
+    const startTracking = async () => {
+      try {
+        if (isNative) {
+          const perm = await Geolocation.requestPermissions();
+          if (perm.location === 'granted') {
+            watchId = await Geolocation.watchPosition({ enableHighAccuracy: true }, (position) => {
+              if (position) {
+                setCurrentPos({ lat: position.coords.latitude, lng: position.coords.longitude });
+              }
+            });
+          }
+        } else {
+          navigator.geolocation.watchPosition(
+            (pos) => setCurrentPos({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+            () => setCurrentPos(MADRID_DEFAULT),
+            { enableHighAccuracy: true }
+          );
+        }
+      } catch (e) { console.error("GPS Error:", e); }
+    };
+    startTracking();
+    return () => { if (watchId) Geolocation.clearWatch({ id: watchId }); };
+  }, []);
+
+  // --- LEAFLET LOAD ---
   useEffect(() => {
     if (!document.getElementById('leaflet-css')) {
       const link = document.createElement('link');
@@ -62,23 +87,66 @@ const App = () => {
   }, []);
 
   useEffect(() => {
-    if ("geolocation" in navigator) {
-      const watchId = navigator.geolocation.watchPosition(
-        (pos) => setCurrentPos({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
-        () => setCurrentPos(MADRID_DEFAULT),
-        { enableHighAccuracy: true }
-      );
-      return () => navigator.geolocation.clearWatch(watchId);
-    }
-  }, []);
-
-  useEffect(() => {
     const handleResize = () => setIsMobile(window.innerWidth < 992);
     window.addEventListener('resize', handleResize);
     const t = setInterval(() => setZuluTime(new Date().toISOString().substring(11, 19) + 'Z'), 1000);
     return () => { clearInterval(t); window.removeEventListener('resize', handleResize); };
   }, []);
 
+  // --- STANDALONE TELEMETRY (SSH) ---
+  const fetchTelemetry = async () => {
+    if (!config || !isDeployed || !isNative) return;
+    const target = band === 'A' ? config.ipA : config.ipB;
+    try {
+      await SSH.startSessionByPasswd({
+        address: target,
+        port: parseInt(config.sshPort || 22),
+        username: config.user,
+        password: config.pass
+      });
+      const cmd = "top -bn1 | grep 'Cpu(s)' | awk '{print $2+$4}'; free -m | grep Mem: | awk '{print $3*100/$2}'; df -h / | tail -1 | awk '{print $5}'";
+      const res = await SSH.execute({ command: cmd });
+      const lines = res.output.split('\n').map(l => l.trim()).filter(l => l);
+      if (lines.length >= 3) {
+        setStats({
+          cpu: Math.round(parseFloat(lines[0]) || 0),
+          ram: Math.round(parseFloat(lines[1]) || 0),
+          disk: lines[2] || '0%',
+          status: 'OPERATIONAL'
+        });
+      }
+    } catch (e) {
+      setStats(prev => ({ ...prev, status: 'ERROR' }));
+    }
+  };
+
+  // --- STANDALONE CoT (TCP) ---
+  const connectTCP = async () => {
+    if (!config || !isDeployed || !isNative) return;
+    const target = band === 'A' ? config.ipA : config.ipB;
+    try {
+      const result = await TcpSocket.connect({ ipAddress: target, port: 8087 });
+      setTcpClientId(result.client);
+      setTermLines(prev => [...prev, `CONNECTED_TO_TAK: ${target}:8087`]);
+    } catch (e) {
+      setTermLines(prev => [...prev, `TAK_CONN_FAILED: ${e.message}`]);
+    }
+  };
+
+  useEffect(() => {
+    if (tcpClientId !== null && isDeployed) {
+      const poll = async () => {
+        try {
+          const res = await TcpSocket.read({ client: tcpClientId, expectLen: 4096, encoding: DataEncoding.UTF8 });
+          if (res.result) processIncomingXML(res.result, "[TAK]");
+        } catch (e) { }
+      };
+      const itv = setInterval(poll, 1000);
+      return () => clearInterval(itv);
+    }
+  }, [tcpClientId, isDeployed]);
+
+  // --- STANDALONE UDP ---
   useEffect(() => {
     if (isNative && isDeployed && UDP) {
       UDP.create().then(() => {
@@ -117,89 +185,59 @@ const App = () => {
     }
   };
 
-  const pollAll = async () => {
-    if (!config || !isDeployed) return;
-    const target = band === 'A' ? config.ipA : config.ipB;
-    const baseUrl = `http://${config.proxy}:8001`;
-    try {
-      const rStats = await fetch(`${baseUrl}/api/v1/telemetry`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host: target, port: parseInt(config.sshPort || 22), user: config.user, password: config.pass })
-      });
-      const dStats = await rStats.json();
-      if (dStats.cpu !== undefined) setStats({ cpu: dStats.cpu, ram: dStats.ram.perc, disk: dStats.disk, status: 'OPERATIONAL' });
-
-      const rComms = await fetch(`${baseUrl}/api/v1/comms`);
-      const dComms = await rComms.json();
-      setMessages(prev => {
-        const newMsgs = dComms.filter(nm => !prev.some(pm => pm.text === nm.text && pm.time === nm.time));
-        return [...prev, ...newMsgs];
-      });
-
-      const rUnits = await fetch(`${baseUrl}/api/v1/units`);
-      const dUnits = await rUnits.json();
-      setUnits(prev => {
-        const merged = [...prev];
-        dUnits.forEach(du => {
-          const idx = merged.findIndex(mu => mu.uid === du.uid);
-          if (idx === -1) merged.push(du);
-          else merged[idx] = { ...merged[idx], ...du };
-        });
-        return merged;
-      });
-    } catch (e) { }
-  };
-
   useEffect(() => {
     if (isDeployed) {
-      pollAll();
-      const itv = setInterval(pollAll, 4000);
-      return () => clearInterval(itv);
+      fetchTelemetry();
+      connectTCP();
+      const itv = setInterval(fetchTelemetry, 5000);
+      return () => {
+        clearInterval(itv);
+        if (tcpClientId !== null) TcpSocket.disconnect({ client: tcpClientId });
+      };
     }
   }, [isDeployed, config, band]);
 
   const toggleMission = async () => {
     if (!config) return;
-    const baseUrl = `http://${config.proxy}:8001`;
-    const action = isDeployed ? 'stop' : 'start';
-    const target = band === 'A' ? config.ipA : config.ipB;
-    try {
-      await fetch(`${baseUrl}/api/v1/control/${action}?host=${target}&callsign=${config.callsign}&lat=${currentPos.lat}&lng=${currentPos.lng}`);
-      setIsDeployed(!isDeployed);
-    } catch (e) { setIsDeployed(!isDeployed); }
+    setIsDeployed(!isDeployed);
   };
 
   const sendComm = async () => {
     if (!userInput.trim() || !config || !isDeployed) return;
-    const baseUrl = `http://${config.proxy}:8001`;
     const msg = { sender: config.callsign, text: userInput, target: chatTarget.uid, targetCallsign: chatTarget.callsign, lat: currentPos.lat, lng: currentPos.lng };
     setUserInput('');
-    try {
-      await fetch(`${baseUrl}/api/v1/comms`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(msg) });
-      if (isNative && UDP) {
-        const ts = new Date().toISOString();
-        const xml = `<?xml version="1.0"?><event version="2.0" uid="C2-${config.callsign}" type="b-t-f" time="${ts}" start="${ts}" stale="${ts}" how="h-e"><point lat="${currentPos.lat}" lon="${currentPos.lng}" hae="0" ce="9" le="9"/><detail><__chat senderCallsign="${config.callsign}"><content>${msg.text}</content></__chat><remarks>${msg.text}</remarks></detail></event>`;
+    
+    const ts = new Date().toISOString();
+    const xml = `<?xml version="1.0"?><event version="2.0" uid="C2-${config.callsign}" type="b-t-f" time="${ts}" start="${ts}" stale="${ts}" how="h-e"><point lat="${currentPos.lat}" lon="${currentPos.lng}" hae="0" ce="9" le="9"/><detail><__chat senderCallsign="${config.callsign}"><content>${msg.text}</content></__chat><remarks>${msg.text}</remarks></detail></event>`;
+
+    if (isNative) {
+      if (tcpClientId !== null) {
+        await TcpSocket.send({ client: tcpClientId, data: xml, encoding: DataEncoding.UTF8 });
+      }
+      if (UDP) {
         await UDP.send({ address: '224.10.10.1', port: 17012, buffer: btoa(xml) });
       }
-    } catch (e) { }
+    }
+    setMessages(prev => [...prev, { sender: config.callsign, text: `[SENT] ${msg.text}`, time: new Date().toLocaleTimeString() }]);
   };
 
   const executeTerm = async (specificCmd = null) => {
-    if (!config) return;
+    if (!config || !isNative) return;
     const cmd = specificCmd || termInput;
     if (!cmd.trim()) return;
     if (!specificCmd) setTermInput('');
     const target = band === 'A' ? config.ipA : config.ipB;
-    const baseUrl = `http://${config.proxy}:8001`;
     setTermLines(prev => [...prev, `> ${cmd}`]);
     try {
-      const r = await fetch(`${baseUrl}/api/v1/terminal`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host: target, port: parseInt(config.sshPort || 22), user: config.user, password: config.pass, command: cmd })
+      await SSH.startSessionByPasswd({
+        address: target,
+        port: parseInt(config.sshPort || 22),
+        username: config.user,
+        password: config.pass
       });
-      const d = await r.json();
-      setTermLines(prev => [...prev, d.output || 'DONE']);
-    } catch (e) { setTermLines(prev => [...prev, 'ERROR: REQ_FAILED']); }
+      const res = await SSH.execute({ command: cmd });
+      setTermLines(prev => [...prev, res.output || 'DONE']);
+    } catch (e) { setTermLines(prev => [...prev, `ERROR: ${e.message}`]); }
   };
 
   const filteredMessages = messages.filter(m => {
@@ -211,7 +249,8 @@ const App = () => {
     <div className="tac-container font-mono">
       <div className="tac-header">
         <div className="d-flex align-items-center gap-2">
-          <img src="/assets/logo.png" alt="L" style={{ width: 24, height: 24, borderRadius: 4 }} onError={(e) => e.target.style.display = 'none'} />
+          {/* LOGO ACTUALIZADO */}
+          <img src="/assets/logo.png" alt="L" style={{ width: 28, height: 28, borderRadius: 4, objectFit: 'contain' }} />
           <span className="text-orange fw-bold ms-1">TAK_C2</span>
         </div>
         <div className="d-flex align-items-center gap-2 ms-auto me-2">
@@ -221,8 +260,8 @@ const App = () => {
         </div>
         <div className="d-flex align-items-center gap-3">
           <div className="d-flex align-items-center gap-2 bg-dark p-1 px-2 rounded-pill border border-secondary" onClick={toggleMission} style={{ cursor: 'pointer' }}>
-            <span className="small text-white-50" style={{ fontSize: '0.6rem' }}>{isDeployed ? 'DEPLOYED' : 'STANDBY'}</span>
-            <div className={`rounded-circle ${isDeployed ? 'bg-success' : 'bg-secondary'}`} style={{ width: 12, height: 12 }}></div>
+            <span className="small text-white-50" style={{ fontSize: '0.6rem' }}>{isDeployed ? 'ACTIVE' : 'STANDBY'}</span>
+            <div className={`rounded-circle ${isDeployed ? 'bg-success shadow-glow' : 'bg-secondary'}`} style={{ width: 12, height: 12 }}></div>
           </div>
           <button className="btn-ops orange p-1" onClick={() => setIsConfigOpen(true)}><Settings size={18} /></button>
         </div>
@@ -300,7 +339,7 @@ const App = () => {
             <div className="d-flex flex-column gap-2" style={{ width: '300px' }}>
               <div className="stats-grid">
                 {[{ l: 'CPU', v: `${stats.cpu}%` }, { l: 'RAM', v: `${stats.ram}%` }, { l: 'DISK', v: stats.disk }].map((s, i) => (
-                  <div className="tac-card p-2 d-flex align-items-center gap-3" key={i}>
+                   <div className="tac-card p-2 d-flex align-items-center gap-3" key={i}>
                     <div className="p-2 bg-black border border-dark rounded text-orange"><Cpu size={14} /></div>
                     <div><div className="text-white-50 small" style={{ fontSize: '0.5rem' }}>{s.l}</div><div className="fw-bold text-orange">{s.v}</div></div>
                   </div>
@@ -349,21 +388,21 @@ const App = () => {
         {isConfigOpen && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="position-fixed top-0 start-0 w-100 h-100 d-flex align-items-center justify-content-center bg-black bg-opacity-95" style={{ zIndex: 2000 }}>
             <div className="tac-card p-4 rounded shadow-lg m-2 text-center overflow-auto" style={{ maxWidth: '600px', width: '100%', maxHeight: '90vh' }}>
-              <img src="/assets/logo.png" alt="LOGO" style={{ width: 60, height: 60, marginBottom: 10, borderRadius: 12 }} onError={(e) => e.target.style.display = 'none'} />
-              <h6 className="text-orange border-bottom border-dark pb-2 mb-3">TACTICAL_INIT_v7.4</h6>
+              <img src="/assets/logo.png" alt="LOGO" style={{ width: 80, height: 80, marginBottom: 15, borderRadius: 16, objectFit: 'contain' }} />
+              <h6 className="text-orange border-bottom border-dark pb-2 mb-3">TACTICAL_INIT_v8.0_STANDALONE</h6>
               <div className="row g-2 text-start">
-                <div className="col-md-6"><label className="small text-white-50">TAK_IP_BAND_A</label><input type="text" className="hud-input w-100" value={tempCfg.ipA} onChange={e => setTempCfg({ ...tempCfg, ipA: e.target.value })} /></div>
-                <div className="col-md-6"><label className="small text-white-50">TAK_IP_BAND_B</label><input type="text" className="hud-input w-100" value={tempCfg.ipB} onChange={e => setTempCfg({ ...tempCfg, ipB: e.target.value })} /></div>
+                <div className="col-md-6"><label className="small text-white-50">TAK_SERVER_IP (BAND_A)</label><input type="text" className="hud-input w-100" value={tempCfg.ipA} onChange={e => setTempCfg({ ...tempCfg, ipA: e.target.value })} /></div>
+                <div className="col-md-6"><label className="small text-white-50">TAK_SERVER_IP (BAND_B)</label><input type="text" className="hud-input w-100" value={tempCfg.ipB} onChange={e => setTempCfg({ ...tempCfg, ipB: e.target.value })} /></div>
                 <div className="col-md-4"><label className="small text-white-50">SSH_PORT</label><input type="text" className="hud-input w-100" value={tempCfg.sshPort} onChange={e => setTempCfg({ ...tempCfg, sshPort: e.target.value })} /></div>
                 <div className="col-md-4"><label className="small text-white-50">SSH_USER</label><input type="text" className="hud-input w-100" value={tempCfg.user} onChange={e => setTempCfg({ ...tempCfg, user: e.target.value })} /></div>
                 <div className="col-md-4"><label className="small text-white-50">SSH_PASS</label><input type="password" className="hud-input w-100" value={tempCfg.pass} onChange={e => setTempCfg({ ...tempCfg, pass: e.target.value })} /></div>
-                <div className="col-md-6"><label className="small text-white-50">C2_PROXY_IP</label><input type="text" className="hud-input w-100" value={tempCfg.proxy} onChange={e => setTempCfg({ ...tempCfg, proxy: e.target.value })} /></div>
                 <div className="col-md-6"><label className="small text-white-50">CALLSIGN</label><input type="text" className="hud-input w-100" value={tempCfg.callsign} onChange={e => setTempCfg({ ...tempCfg, callsign: e.target.value })} /></div>
               </div>
               <div className="mt-4 d-flex gap-2">
                 <button className="btn-ops flex-grow-1 border border-secondary" onClick={() => setIsConfigOpen(false)}>CANCEL</button>
-                <button className="btn-ops orange flex-grow-1 py-3 fw-bold" onClick={() => { localStorage.setItem('tak_bootstrap_v13_cfg', JSON.stringify(tempCfg)); setConfig(tempCfg); setIsConfigOpen(false); }}>SAVE_&_RESTART</button>
+                <button className="btn-ops orange flex-grow-1 py-3 fw-bold" onClick={() => { localStorage.setItem('tak_bootstrap_v13_cfg', JSON.stringify(tempCfg)); setConfig(tempCfg); setIsConfigOpen(false); }}>SAVE_&_ACTIVATE</button>
               </div>
+              <div className="mt-3 text-white-50" style={{ fontSize: '0.6rem' }}>* THIS APP CONNECTS DIRECTLY TO THE SERVER VIA SSH & TCP. ENSURE NETWORK ACCESSIBILITY.</div>
             </div>
           </motion.div>
         )}
